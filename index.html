@@ -2,8 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <title>Checking Ledger</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json"/>
+<meta name="theme-color" content="#C9907A" media="(prefers-color-scheme: light)"/>
+<meta name="theme-color" content="#1A110C" media="(prefers-color-scheme: dark)"/>
+
+<!-- iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<meta name="apple-mobile-web-app-title" content="Ledger"/>
+<link rel="apple-touch-icon" href="icon.svg"/>
+
+<!-- Android / general -->
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="application-name" content="Ledger"/>
+<link rel="icon" type="image/svg+xml" href="icon.svg"/>
+
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Lato:wght@400;700&display=swap" rel="stylesheet"/>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -12,7 +29,10 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-tap-highlight-color:transparent}
-body{background:#F9F3EE;font-family:'Lato',sans-serif;color:#3D2E26;overscroll-behavior:none}
+body{font-family:'Lato',sans-serif;overscroll-behavior:none;transition:background .35s,color .35s}
+/* Safe area for iOS notch / home indicator */
+.safe-top{padding-top:env(safe-area-inset-top)}
+.safe-bottom{padding-bottom:calc(env(safe-area-inset-bottom) + 30px)}
 input[type=number]::-webkit-inner-spin-button,
 input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
 input[type=number]{-moz-appearance:textfield}
@@ -31,15 +51,28 @@ const SB=window.supabase.createClient(
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlybXR2anhsbnRvemlnYnF4aHZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4NTkzMTQsImV4cCI6MjA5MjQzNTMxNH0.nyIZx7Z0GnHEIlZpBlN6TzHHsf7tGuhdvWECdpcQ-a0"
 );
 
-// ── Colors ───────────────────────────────────────────────────────
-const C={
+// ── Colors (computed per-mode inside App) ────────────────────────
+const LIGHT={
   blush:"#C9907A",sage:"#7A9A80",mist:"#9A7890",amber:"#C4944A",
   text:"#3D2E26",lt:"#B09080",sub:"#967060",
   danger:"#C05040",ok:"#4A8A5A",
   card:"rgba(255,255,255,0.84)",
   border:"rgba(255,255,255,0.94)",
   div:"rgba(201,144,122,0.13)",
-  nav:"rgba(255,255,255,0.95)",
+  nav:"rgba(255,255,255,0.96)",
+  bg:"#F9F3EE",
+  bgGrad:"linear-gradient(145deg,#F9F3EE,#EDE3DA)",
+};
+const DARK={
+  blush:"#D4A090",sage:"#8AB890",mist:"#B090A8",amber:"#D4A454",
+  text:"#EAD8C8",lt:"#6A5848",sub:"#5A4838",
+  danger:"#D06858",ok:"#5AAA6A",
+  card:"rgba(42,30,22,0.94)",
+  border:"rgba(68,50,38,0.80)",
+  div:"rgba(180,110,90,0.13)",
+  nav:"rgba(22,14,10,0.97)",
+  bg:"#1A110C",
+  bgGrad:"linear-gradient(145deg,#1A110C,#221610)",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -170,16 +203,51 @@ function generateAutoTxns(year,month,recurringDebts,incomeStreams){
 function App(){
   const now=new Date();
   const [tab,setTab]=useState("calendar");
+  const [installPrompt,setInstallPrompt]=useState(null);
+  const [installable,setInstallable]=useState(false);
+  const [installed,setInstalled]=useState(false);
+
+  useEffect(()=>{
+    // Register service worker
+    if("serviceWorker" in navigator){
+      navigator.serviceWorker.register("./sw.js").catch(()=>{});
+    }
+    // PWA install prompt
+    const handler=e=>{e.preventDefault();setInstallPrompt(e);setInstallable(true);};
+    window.addEventListener("beforeinstallprompt",handler);
+    window.addEventListener("appinstalled",()=>{setInstallable(false);setInstalled(true);});
+    return()=>window.removeEventListener("beforeinstallprompt",handler);
+  },[]);
+
+  async function installApp(){
+    if(!installPrompt)return;
+    installPrompt.prompt();
+    const{outcome}=await installPrompt.userChoice;
+    if(outcome==="accepted"){setInstallable(false);setInstalled(true);}
+  }
   const [viewYear,setViewYear]=useState(now.getFullYear());
   const [viewMonth,setViewMonth]=useState(now.getMonth());
   const [loading,setLoading]=useState(true);
   const [sync,setSync]=useState("idle");
+  const [darkMode,setDarkMode]=useState(()=>{
+    try{return localStorage.getItem("lgr-dark")==="1";}catch{return false;}
+  });
   const tmr=useRef({});
+
+  const C=darkMode?DARK:LIGHT;
+
+  useEffect(()=>{
+    document.body.style.background=C.bg;
+    document.body.style.color=C.text;
+    try{localStorage.setItem("lgr-dark",darkMode?"1":"0");}catch{}
+  },[darkMode]);
 
   // Data
   const [txns,setTxns]=useState([]);
   const [lcStart,setLcStart]=useState(3385);
   const [scuStart,setScuStart]=useState(1522.99);
+  const [lcReset,setLcReset]=useState(null);  // {date,balance} or null
+  const [scuReset,setScuReset]=useState(null);
   const [recurringDebts,setRecurringDebts]=useState([]);
   const [incomeStreams,setIncomeStreams]=useState([]);
 
@@ -201,6 +269,8 @@ function App(){
         if(sR?.budgets){
           if(sR.budgets.lcStart!=null)setLcStart(sR.budgets.lcStart);
           if(sR.budgets.scuStart!=null)setScuStart(sR.budgets.scuStart);
+          if(sR.budgets.lcReset)setLcReset(sR.budgets.lcReset);
+          if(sR.budgets.scuReset)setScuReset(sR.budgets.scuReset);
         }
         if(rR?.budgets?.list)setRecurringDebts(rR.budgets.list);
         if(iR?.budgets?.list)setIncomeStreams(iR.budgets.list);
@@ -219,7 +289,7 @@ function App(){
   }
 
   const saveTxns=t=>sv("t",()=>dbSet("txns",{txns:t}));
-  const saveSettings=(lc,scu)=>sv("s",()=>dbSet("settings",{lcStart:lc,scuStart:scu}));
+  const saveSettings=(lc,scu,lcR,scuR)=>sv("s",()=>dbSet("settings",{lcStart:lc,scuStart:scu,lcReset:lcR,scuReset:scuR}));
   const saveRecurring=r=>sv("r",()=>dbSet("recurring",{list:r}));
   const saveIncome=i=>sv("i",()=>dbSet("income",{list:i}));
 
@@ -238,17 +308,63 @@ function App(){
   },[txns,autoTxns]);
 
   // Running balances across ALL transactions (all time)
+  // Respects per-account reset checkpoints — txns before a reset date are excluded
   const withBal=useMemo(()=>{
-    let lc=lcStart,scu=scuStart;
-    return allTxns.map(t=>{
-      if(t.account==="lc")lc=Math.round((lc+t.amount)*100)/100;
-      else scu=Math.round((scu+t.amount)*100)/100;
-      return{...t,thisBal:t.account==="lc"?lc:scu,lcNow:lc,scuNow:scu};
-    });
-  },[allTxns,lcStart,scuStart]);
+    const lcResetDate=lcReset?.date||null;
+    const scuResetDate=scuReset?.date||null;
+    let lc=lcResetDate?parseFloat(lcReset.balance)||0:lcStart;
+    let scu=scuResetDate?parseFloat(scuReset.balance)||0:scuStart;
+    return allTxns
+      .filter(t=>{
+        if(t.account==="lc"&&lcResetDate&&t.date<lcResetDate)return false;
+        if(t.account==="scu"&&scuResetDate&&t.date<scuResetDate)return false;
+        return true;
+      })
+      .map(t=>{
+        if(t.account==="lc")lc=Math.round((lc+t.amount)*100)/100;
+        else scu=Math.round((scu+t.amount)*100)/100;
+        return{...t,thisBal:t.account==="lc"?lc:scu,lcNow:lc,scuNow:scu};
+      });
+  },[allTxns,lcStart,scuStart,lcReset,scuReset]);
 
   const lastLc=withBal.length?withBal[withBal.length-1].lcNow:lcStart;
   const lastScu=withBal.length?withBal[withBal.length-1].scuNow:scuStart;
+
+  // Actual balances — manual/confirmed txns only (no auto-scheduled)
+  const actualWithBal=useMemo(()=>{
+    const lcResetDate=lcReset?.date||null;
+    const scuResetDate=scuReset?.date||null;
+    let lc=lcResetDate?parseFloat(lcReset.balance)||0:lcStart;
+    let scu=scuResetDate?parseFloat(scuReset.balance)||0:scuStart;
+    return allTxns
+      .filter(t=>{
+        if(t.isAuto||t.planned)return false;
+        if(t.account==="lc"&&lcResetDate&&t.date<lcResetDate)return false;
+        if(t.account==="scu"&&scuResetDate&&t.date<scuResetDate)return false;
+        return true;
+      })
+      .map(t=>{
+        if(t.account==="lc")lc=Math.round((lc+t.amount)*100)/100;
+        else scu=Math.round((scu+t.amount)*100)/100;
+        return{...t,thisBal:t.account==="lc"?lc:scu,lcNow:lc,scuNow:scu};
+      });
+  },[allTxns,lcStart,scuStart,lcReset,scuReset]);
+  const actualLastLc=actualWithBal.length?actualWithBal[actualWithBal.length-1].lcNow:lcStart;
+  const actualLastScu=actualWithBal.length?actualWithBal[actualWithBal.length-1].scuNow:scuStart;
+
+  // Month-level budget summary (actual vs projected)
+  const monthSummary=useMemo(()=>{
+    const prefix=`${viewYear}-${pad(viewMonth+1)}`;
+    const mAll=withBal.filter(t=>t.date.startsWith(prefix));
+    const mActual=mAll.filter(t=>!t.isAuto);
+    const sum=(arr,fn)=>arr.filter(fn).reduce((s,t)=>s+t.amount,0);
+    return{
+      actualIncome:sum(mActual,t=>t.amount>0),
+      actualExpenses:Math.abs(sum(mActual,t=>t.amount<0)),
+      projIncome:sum(mAll,t=>t.amount>0),
+      projExpenses:Math.abs(sum(mAll,t=>t.amount<0)),
+    };
+  },[withBal,viewYear,viewMonth]);
 
   // Txns for the viewed month
   const monthTxns=useMemo(()=>{
@@ -287,14 +403,29 @@ function App(){
   }
   // "Commit" an auto-txn (make it manual so it's editable/deletable)
   function commitAuto(auto){
-    const t=[...txns,{...auto,id:Date.now().toString(),isAuto:false}]
+    const t=[...txns,{...auto,id:Date.now().toString(),isAuto:false,wasAuto:true}]
       .sort((a,b)=>a.date.localeCompare(b.date));
+    setTxns(t);saveTxns(t);
+  }
+  function revertToAuto(id){
+    const t=txns.filter(x=>x.id!==id);setTxns(t);saveTxns(t);
+  }
+  function markPaid(id){
+    const t=txns.map(x=>x.id===id?{...x,planned:false,wasPlanned:true}:x);
+    setTxns(t);saveTxns(t);
+  }
+  function revertToPlanned(id){
+    const t=txns.map(x=>x.id===id?{...x,planned:true,wasPlanned:false}:x);
     setTxns(t);saveTxns(t);
   }
   function onStartChange(acct,val){
     const v=parseFloat(val)||0;
-    if(acct==="lc"){setLcStart(v);saveSettings(v,scuStart);}
-    else{setScuStart(v);saveSettings(lcStart,v);}
+    if(acct==="lc"){setLcStart(v);saveSettings(v,scuStart,lcReset,scuReset);}
+    else{setScuStart(v);saveSettings(lcStart,v,lcReset,scuReset);}
+  }
+  function onResetChange(acct,resetObj){
+    if(acct==="lc"){setLcReset(resetObj);saveSettings(lcStart,scuStart,resetObj,scuReset);}
+    else{setScuReset(resetObj);saveSettings(lcStart,scuStart,lcReset,resetObj);}
   }
   function addRecurring(r){const l=[...recurringDebts,r];setRecurringDebts(l);saveRecurring(l);}
   function editRecurring(r){const l=recurringDebts.map(x=>x.id===r.id?r:x);setRecurringDebts(l);saveRecurring(l);}
@@ -317,36 +448,80 @@ function App(){
 
   const shared={C,txns,allTxns,withBal,monthTxns,txnsByDay,viewYear,viewMonth,
     setViewYear,setViewMonth,showAddTxn,setShowAddTxn,editTxnId,setEditTxnId,
-    addTxn,delTxn,editTxn,commitAuto,acctFilter,setAcctFilter,descFilter,setDescFilter,
+    addTxn,delTxn,editTxn,commitAuto,revertToAuto,markPaid,revertToPlanned,acctFilter,setAcctFilter,descFilter,setDescFilter,
     recurringDebts,addRecurring,editRecurring,delRecurring,
     incomeStreams,addIncome,editIncome,delIncome,
-    lcStart,scuStart,onStartChange,lastLc,lastScu};
+    lcStart,scuStart,onStartChange,lcReset,scuReset,onResetChange,lastLc,lastScu,
+    actualLastLc,actualLastScu,actualWithBal,monthSummary,darkMode,setDarkMode};
 
   return(
-    <div style={{minHeight:"100vh",background:"linear-gradient(145deg,#F9F3EE,#EDE3DA)",paddingBottom:30}}>
+    <div style={{minHeight:"100vh",background:C.bgGrad,transition:"background .35s"}} className="safe-bottom">
       <div style={{position:"fixed",top:-60,right:-60,width:220,height:220,borderRadius:"60% 40% 70% 30%/50% 60% 40% 50%",background:"radial-gradient(circle,rgba(222,188,181,.25) 0%,transparent 70%)",pointerEvents:"none",zIndex:0}}/>
 
       {/* Header */}
-      <div style={{position:"sticky",top:0,zIndex:30,background:C.nav,backdropFilter:"blur(14px)",borderBottom:`1px solid ${C.div}`,padding:"12px 16px 0"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-          <div>
-            <div style={{fontSize:10,color:C.blush,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:2}}>{dateStr}</div>
-            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:22,fontWeight:700,color:C.text,lineHeight:1}}>Checking Ledger</div>
-          </div>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:10,color:syncColor,marginBottom:4}}>{syncLabel}</div>
-            <div style={{display:"flex",gap:6}}>
-              {[{l:"LC",v:lastLc,c:C.blush},{l:"SCU",v:lastScu,c:C.sage}].map((a,i)=>(
-                <div key={i} style={{background:a.c+"14",borderRadius:9,padding:"4px 8px",border:`1px solid ${a.c}22`,textAlign:"right"}}>
-                  <div style={{fontSize:8,color:C.lt,textTransform:"uppercase",letterSpacing:"0.08em"}}>{a.l}</div>
-                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:13,fontWeight:700,color:a.c}}>{fmt(a.v)}</div>
-                </div>
-              ))}
+      <div style={{position:"sticky",top:0,zIndex:30,background:C.nav,backdropFilter:"blur(16px)",borderBottom:`1px solid ${C.div}`,padding:"10px 14px 0"}} className="safe-top">
+
+        {/* Row 1: title + dark toggle + balances */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8,gap:8}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:9,color:C.blush,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:1}}>{dateStr}</div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:20,fontWeight:700,color:C.text,lineHeight:1}}>Checking Ledger</div>
+              <button onClick={()=>setDarkMode(d=>!d)} title="Toggle dark mode"
+                style={{background:"none",border:`1px solid ${C.div}`,borderRadius:7,padding:"3px 6px",fontSize:13,cursor:"pointer",color:C.lt,lineHeight:1}}>
+                {darkMode?"☀️":"🌙"}
+              </button>
+              {installable&&!installed&&(
+                <button onClick={installApp} title="Install app"
+                  style={{background:C.blush+"18",border:`1px solid ${C.blush}40`,borderRadius:7,padding:"3px 8px",fontSize:11,cursor:"pointer",color:C.blush,fontWeight:700,lineHeight:1}}>
+                  ⬇ Install
+                </button>
+              )}
+              <div style={{fontSize:9,color:syncColor}}>{syncLabel}</div>
             </div>
+          </div>
+
+          {/* Balance chips — actual + projected per account */}
+          <div style={{display:"flex",gap:5,flexShrink:0}}>
+            {[{l:"LC",actual:actualLastLc,proj:lastLc,c:C.blush},{l:"SCU",actual:actualLastScu,proj:lastScu,c:C.sage}].map((a,i)=>(
+              <div key={i} style={{background:a.c+"12",borderRadius:10,padding:"5px 9px",border:`1px solid ${a.c}28`,textAlign:"right",minWidth:84}}>
+                <div style={{fontSize:8,color:a.c,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,marginBottom:3}}>{a.l}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:5}}>
+                    <span style={{fontSize:8,color:C.lt,letterSpacing:"0.05em"}}>actual</span>
+                    <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:13,fontWeight:700,color:a.c}}>{fmt(a.actual)}</span>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:5}}>
+                    <span style={{fontSize:8,color:C.lt,letterSpacing:"0.05em"}}>planned</span>
+                    <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:12,fontWeight:600,color:a.proj<a.actual?C.danger:a.c,opacity:.85}}>{fmt(a.proj)}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Month nav */}
+        {/* Row 2: Month budget summary */}
+        <div style={{display:"flex",gap:4,marginBottom:8,padding:"7px 10px",background:C.card,borderRadius:11,border:`1px solid ${C.div}`}}>
+          {[
+            {label:"Income",actual:monthSummary.actualIncome,proj:monthSummary.projIncome,c:C.sage,sign:"+"},
+            {label:"Expenses",actual:monthSummary.actualExpenses,proj:monthSummary.projExpenses,c:C.danger,sign:"−"},
+            {label:"Net",actual:monthSummary.actualIncome-monthSummary.actualExpenses,proj:monthSummary.projIncome-monthSummary.projExpenses,
+             c:(monthSummary.projIncome-monthSummary.projExpenses)>=0?C.sage:C.danger,sign:""},
+          ].map((m,i)=>(
+            <div key={i} style={{flex:1,textAlign:"center",borderRight:i<2?`1px solid ${C.div}`:"none",paddingRight:i<2?4:0}}>
+              <div style={{fontSize:8,color:C.lt,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:3}}>{m.label}</div>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:13,fontWeight:700,color:m.c}}>
+                {m.sign}{fmt(Math.abs(m.actual))}
+              </div>
+              <div style={{fontSize:9,color:C.lt,marginTop:1}}>
+                <span style={{color:m.c,opacity:.7}}>▸ {m.sign}{fmt(Math.abs(m.proj))}</span> planned
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Row 3: Month nav */}
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
           <button onClick={()=>{if(viewMonth===0){setViewMonth(11);setViewYear(y=>y-1);}else setViewMonth(m=>m-1);}}
             style={{background:C.blush+"14",border:`1px solid ${C.blush}28`,borderRadius:8,padding:"4px 10px",fontSize:14,color:C.blush,cursor:"pointer"}}>‹</button>
@@ -355,12 +530,12 @@ function App(){
             style={{background:C.blush+"14",border:`1px solid ${C.blush}28`,borderRadius:8,padding:"4px 10px",fontSize:14,color:C.blush,cursor:"pointer"}}>›</button>
         </div>
 
-        {/* Tabs */}
-        <div style={{display:"flex",gap:0,borderBottom:"none",overflowX:"auto",paddingBottom:0}}>
+        {/* Row 4: Tabs */}
+        <div style={{display:"flex",gap:0,overflowX:"auto",paddingBottom:0}}>
           {TABS.map(t=>(
             <button key={t.id} onClick={()=>setTab(t.id)}
               style={{padding:"7px 12px",borderRadius:"10px 10px 0 0",border:"none",
-                background:tab===t.id?"rgba(255,255,255,0.95)":"transparent",
+                background:tab===t.id?C.card:"transparent",
                 fontSize:11,fontWeight:tab===t.id?700:400,
                 color:tab===t.id?C.blush:C.lt,cursor:"pointer",whiteSpace:"nowrap",
                 borderBottom:tab===t.id?`2px solid ${C.blush}`:"2px solid transparent"}}>
@@ -392,7 +567,7 @@ const PRESETS=["TP Paycheck","XE Paycheck","Mortgage Draft","Avant","SoFi","Upst
 
 // ── TRANSACTION FORM ─────────────────────────────────────────────
 function TxnForm({C,init,onSave,onCancel,title}){
-  const [f,setF]=useState(init||{date:today(),desc:"",amount:"",account:"lc",note:""});
+  const [f,setF]=useState(()=>({date:today(),desc:"",amount:"",account:"lc",note:"",planned:false,...(init||{})}));
   const [showP,setShowP]=useState(false);
   const isPos=parseFloat(f.amount)>=0;
   return(
@@ -456,10 +631,35 @@ function TxnForm({C,init,onSave,onCancel,title}){
           placeholder="Optional note…"
           style={{width:"100%",padding:"7px 10px",borderRadius:10,border:`1.5px solid ${C.div}`,background:"rgba(255,255,255,0.5)",fontSize:12,color:C.text,outline:"none",boxSizing:"border-box"}}/>
       </div>
+      {/* Planned toggle */}
+      <button onClick={()=>setF(x=>({...x,planned:!x.planned}))}
+        style={{width:"100%",marginBottom:10,padding:"9px 12px",borderRadius:11,
+          border:`1.5px solid ${f.planned?C.mist+"60":C.div}`,
+          background:f.planned?C.mist+"14":"transparent",
+          display:"flex",alignItems:"center",justifyContent:"space-between",
+          cursor:"pointer"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:15}}>🗓</span>
+          <div style={{textAlign:"left"}}>
+            <div style={{fontSize:12,fontWeight:700,color:f.planned?C.mist:C.lt}}>
+              {f.planned?"Scheduled as Future Expense":"Schedule as Future Expense?"}
+            </div>
+            <div style={{fontSize:10,color:C.lt,marginTop:1}}>
+              {f.planned?"Will show in planned balance only — confirm when paid":"Tap to mark as upcoming, not yet paid"}
+            </div>
+          </div>
+        </div>
+        <div style={{width:34,height:20,borderRadius:10,background:f.planned?C.mist:"rgba(0,0,0,.12)",position:"relative",flexShrink:0,transition:"background .2s"}}>
+          <div style={{position:"absolute",top:3,left:f.planned?15:3,width:14,height:14,borderRadius:"50%",background:"white",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,.2)"}}/>
+        </div>
+      </button>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>onSave(f)}
-          style={{flex:1,padding:"11px",borderRadius:11,background:C.blush+"20",border:`1.5px solid ${C.blush}45`,fontSize:13,fontWeight:700,color:C.blush,cursor:"pointer"}}>
-          Save
+          style={{flex:1,padding:"11px",borderRadius:11,
+            background:f.planned?C.mist+"20":C.blush+"20",
+            border:`1.5px solid ${f.planned?C.mist+"55":C.blush+"45"}`,
+            fontSize:13,fontWeight:700,color:f.planned?C.mist:C.blush,cursor:"pointer"}}>
+          {f.planned?"Schedule":"Save"}
         </button>
         <button onClick={onCancel}
           style={{padding:"11px 18px",borderRadius:11,border:`1px solid ${C.div}`,background:"transparent",fontSize:13,color:C.lt,cursor:"pointer"}}>
@@ -471,7 +671,7 @@ function TxnForm({C,init,onSave,onCancel,title}){
 }
 
 // ── CALENDAR PAGE ────────────────────────────────────────────────
-function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAuto,delTxn,setEditTxnId,editTxnId,editTxn,addTxn,showAddTxn,setShowAddTxn}){
+function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,actualWithBal,lcStart,scuStart,commitAuto,revertToAuto,markPaid,revertToPlanned,delTxn,setEditTxnId,editTxnId,editTxn,addTxn,showAddTxn,setShowAddTxn}){
   const dim=daysInMonth(viewYear,viewMonth);
   const firstDow=new Date(viewYear,viewMonth,1).getDay(); // 0=Sun
   const today=new Date().toISOString().split("T")[0];
@@ -531,8 +731,9 @@ function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAu
             const isToday=dateStr===today;
             const isSelected=selectedDay===d;
             const hasAuto=dayTxns.some(t=>t.isAuto);
-            const hasDep=dayTxns.some(t=>t.amount>0);
-            const hasWd=dayTxns.some(t=>t.amount<0);
+            const hasPlanned=dayTxns.some(t=>t.planned&&!t.isAuto);
+            const hasDep=dayTxns.some(t=>t.amount>0&&!t.planned);
+            const hasWd=dayTxns.some(t=>t.amount<0&&!t.planned&&!t.isAuto);
             return(
               <button key={d} onClick={()=>setSelectedDay(isSelected?null:d)}
                 style={{aspectRatio:"1",borderRadius:10,border:`1.5px solid ${isSelected?C.blush+"60":isToday?C.sage+"50":"transparent"}`,
@@ -544,6 +745,7 @@ function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAu
                     {hasDep&&<div style={{width:4,height:4,borderRadius:"50%",background:C.sage}}/>}
                     {hasWd&&<div style={{width:4,height:4,borderRadius:"50%",background:C.danger}}/>}
                     {hasAuto&&<div style={{width:4,height:4,borderRadius:"50%",background:C.amber,opacity:.7}}/>}
+                    {hasPlanned&&<div style={{width:4,height:4,borderRadius:"50%",background:C.mist,opacity:.8}}/>}
                   </div>
                 )}
               </button>
@@ -552,7 +754,7 @@ function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAu
         </div>
         {/* Legend */}
         <div style={{display:"flex",gap:12,justifyContent:"center",marginTop:10,fontSize:10,color:C.lt}}>
-          {[[C.sage,"Deposit"],[C.danger,"Withdrawal"],[C.amber,"Auto/Recurring"]].map(([c,l])=>(
+          {[[C.sage,"Deposit"],[C.danger,"Withdrawal"],[C.amber,"Auto/Recurring"],[C.mist,"Planned"]].map(([c,l])=>(
             <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
               <div style={{width:7,height:7,borderRadius:"50%",background:c}}/>
               <span>{l}</span>
@@ -562,10 +764,45 @@ function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAu
       </div>
 
       {/* Selected day detail */}
-      {selectedDay&&(
+      {selectedDay&&(()=>{
+        const selDateStr=isoDate(viewYear,viewMonth,selectedDay);
+        const planUpTo=withBal.filter(t=>t.date<=selDateStr);
+        const lastPlan=planUpTo[planUpTo.length-1];
+        const dayPlanLc=lastPlan!=null?lastPlan.lcNow:(lcStart??0);
+        const dayPlanScu=lastPlan!=null?lastPlan.scuNow:(scuStart??0);
+        const actUpTo=(actualWithBal||[]).filter(t=>t.date<=selDateStr);
+        const lastAct=actUpTo[actUpTo.length-1];
+        const dayActLc=lastAct!=null?lastAct.lcNow:(lcStart??0);
+        const dayActScu=lastAct!=null?lastAct.scuNow:(scuStart??0);
+        return(
         <div style={{background:C.card,borderRadius:16,padding:"13px 15px",border:`1.5px solid ${C.blush}25`,marginBottom:12,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
           <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:700,marginBottom:10}}>
             {MONTH_NAMES[viewMonth]} {selectedDay}, {viewYear}
+          </div>
+
+          {/* Day balance summary */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+            {[{l:"LC / Main Checking",c:C.blush,actual:dayActLc,planned:dayPlanLc},
+              {l:"SCU Checking",c:C.sage,actual:dayActScu,planned:dayPlanScu}].map((a,i)=>(
+              <div key={i} style={{background:a.c+"0E",borderRadius:11,padding:"9px 11px",border:`1px solid ${a.c}28`}}>
+                <div style={{fontSize:9,color:a.c,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:6}}>{a.l}</div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:3}}>
+                  <span style={{fontSize:9,color:C.lt}}>Actual</span>
+                  <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:a.c}}>{fmt(a.actual)}</span>
+                </div>
+                <div style={{height:1,background:a.c+"18",marginBottom:3}}/>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+                  <span style={{fontSize:9,color:C.lt}}>Planned</span>
+                  <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:14,fontWeight:600,
+                    color:a.planned<a.actual?C.danger:a.c,opacity:.85}}>{fmt(a.planned)}</span>
+                </div>
+                {a.planned!==a.actual&&(
+                  <div style={{fontSize:9,color:a.planned<a.actual?C.danger:C.ok,marginTop:4,textAlign:"right"}}>
+                    {a.planned<a.actual?"↓":"↑"} {fmt(Math.abs(a.planned-a.actual))} pending
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
           {selectedTxns.length===0?(
             <div style={{fontSize:13,color:C.lt,textAlign:"center",padding:"12px 0"}}>No transactions this day</div>
@@ -576,28 +813,42 @@ function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAu
               return <TxnForm key={t.id} C={C} init={{...t}} title="Edit" onSave={editTxn} onCancel={()=>setEditTxnId(null)}/>;
             }
             return(
-              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,background:t.isAuto?C.amber+"0A":"rgba(255,255,255,0.6)",borderRadius:10,padding:"9px 10px",border:`1px solid ${t.isAuto?C.amber+"25":C.div}`,marginBottom:i<selectedTxns.length-1?6:0}}>
-                <div style={{width:7,height:7,borderRadius:"50%",background:col,flexShrink:0}}/>
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,
+                background:t.isAuto?C.amber+"0A":t.planned?C.mist+"0C":"rgba(255,255,255,0.6)",
+                borderRadius:10,padding:"9px 10px",
+                border:`1px solid ${t.isAuto?C.amber+"25":t.planned?C.mist+"30":C.div}`,
+                marginBottom:i<selectedTxns.length-1?6:0}}>
+                <div style={{width:7,height:7,borderRadius:"50%",background:t.planned?C.mist:col,flexShrink:0}}/>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.desc}</div>
-                  <div style={{fontSize:9,color:col,textTransform:"uppercase",letterSpacing:"0.08em"}}>{t.account==="lc"?"LC":"SCU"} · Bal: {fmt(t.thisBal)}</div>
+                  <div style={{fontSize:9,color:t.planned?C.mist:col,textTransform:"uppercase",letterSpacing:"0.08em"}}>{t.account==="lc"?"LC":"SCU"} · Bal: {fmt(t.thisBal)}</div>
                   {t.isAuto&&<div style={{fontSize:9,color:C.amber,marginTop:1}}>⟳ Auto-scheduled</div>}
+                  {t.planned&&<div style={{fontSize:9,color:C.mist,marginTop:1}}>🗓 Planned — not yet paid</div>}
                 </div>
-                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:neg?C.danger:C.sage,flexShrink:0}}>
-                  {neg?"":"+"}{ new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:t.planned?C.mist:neg?C.danger:C.sage,flexShrink:0,opacity:t.planned?.75:1}}>
+                  {neg?"":"+"}{new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
                 </div>
-                <div style={{display:"flex",gap:4,flexShrink:0}}>
+                <div style={{display:"flex",flexDirection:"column",gap:3,flexShrink:0}}>
                   {t.isAuto
-                    ?<button onClick={()=>commitAuto(t)} title="Confirm this transaction" style={{fontSize:11,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:7,padding:"3px 6px",color:C.sage,cursor:"pointer"}}>✓</button>
-                    :<><button onClick={()=>setEditTxnId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
-                    <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button></>
+                    ?<button onClick={()=>commitAuto(t)} title="Confirm this transaction" style={{fontSize:11,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:7,padding:"3px 6px",color:C.sage,cursor:"pointer"}}>✓ confirm</button>
+                    :t.planned
+                      ?<button onClick={()=>markPaid(t.id)} style={{fontSize:11,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:7,padding:"3px 6px",color:C.sage,cursor:"pointer"}}>✓ paid</button>
+                      :<>
+                        {t.wasPlanned&&<button onClick={()=>revertToPlanned(t.id)} title="Return to planned" style={{fontSize:10,background:C.mist+"18",border:`1px solid ${C.mist}40`,borderRadius:6,padding:"2px 5px",color:C.mist,cursor:"pointer"}}>↺ planned</button>}
+                        {t.wasAuto&&<button onClick={()=>revertToAuto(t.id)} title="Return to forecast" style={{fontSize:10,background:C.amber+"18",border:`1px solid ${C.amber}40`,borderRadius:6,padding:"2px 5px",color:C.amber,cursor:"pointer"}}>↺ forecast</button>}
+                        <div style={{display:"flex",gap:3}}>
+                          <button onClick={()=>setEditTxnId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
+                          <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button>
+                        </div>
+                      </>
                   }
                 </div>
               </div>
             );
           })}
         </div>
-      )}
+        );
+      })()}
 
       {/* Add transaction */}
       {!showAddTxn?(
@@ -614,7 +865,7 @@ function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAu
 }
 
 // ── LEDGER PAGE ──────────────────────────────────────────────────
-function LedgerPage({C,monthTxns,showAddTxn,setShowAddTxn,editTxnId,setEditTxnId,addTxn,delTxn,editTxn,commitAuto,acctFilter,setAcctFilter,descFilter,setDescFilter,viewYear,viewMonth}){
+function LedgerPage({C,monthTxns,showAddTxn,setShowAddTxn,editTxnId,setEditTxnId,addTxn,delTxn,editTxn,commitAuto,revertToAuto,markPaid,revertToPlanned,acctFilter,setAcctFilter,descFilter,setDescFilter,viewYear,viewMonth}){
   return(
     <div className="fade">
       {!showAddTxn&&!editTxnId&&(
@@ -656,23 +907,36 @@ function LedgerPage({C,monthTxns,showAddTxn,setShowAddTxn,editTxnId,setEditTxnId
           return <TxnForm key={t.id} C={C} init={{...t}} title="Edit Transaction" onSave={editTxn} onCancel={()=>setEditTxnId(null)}/>;
         }
         return(
-          <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,background:t.isAuto?C.amber+"0A":C.card,borderRadius:12,padding:"10px 12px",border:`1px solid ${t.isAuto?C.amber+"25":C.border}`,marginBottom:5,boxShadow:"0 1px 6px rgba(0,0,0,.04)"}}>
-            <div style={{width:7,height:7,borderRadius:"50%",background:col,flexShrink:0}}/>
+          <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,
+            background:t.isAuto?C.amber+"0A":t.planned?C.mist+"0C":C.card,
+            borderRadius:12,padding:"10px 12px",
+            border:`1px solid ${t.isAuto?C.amber+"25":t.planned?C.mist+"30":C.border}`,
+            marginBottom:5,boxShadow:"0 1px 6px rgba(0,0,0,.04)"}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:t.planned?C.mist:col,flexShrink:0}}/>
             <div style={{fontSize:11,color:C.lt,flexShrink:0,minWidth:68}}>{t.date.split("-").slice(1).map(Number).join("/")}</div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.desc}</div>
               {t.note&&<div style={{fontSize:10,color:C.lt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.note}</div>}
-              <div style={{fontSize:9,color:col,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{t.account==="lc"?"LC":"SCU"} · {fmt(t.thisBal)}</div>
+              <div style={{fontSize:9,color:t.planned?C.mist:col,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{t.account==="lc"?"LC":"SCU"} · {fmt(t.thisBal)}</div>
               {t.isAuto&&<div style={{fontSize:9,color:C.amber}}>⟳ Auto-scheduled</div>}
+              {t.planned&&<div style={{fontSize:9,color:C.mist}}>🗓 Planned — not yet paid</div>}
             </div>
-            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:neg?C.danger:C.sage,flexShrink:0}}>
-              {neg?"":"+"}{ new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
+            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:t.planned?C.mist:neg?C.danger:C.sage,flexShrink:0,opacity:t.planned?.75:1}}>
+              {neg?"":"+"}{new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:3,flexShrink:0}}>
+            <div style={{display:"flex",flexDirection:"column",gap:3,flexShrink:0,alignItems:"flex-end"}}>
               {t.isAuto
                 ?<button onClick={()=>commitAuto(t)} title="Confirm" style={{fontSize:10,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:6,padding:"2px 5px",color:C.sage,cursor:"pointer"}}>✓</button>
-                :<><button onClick={()=>setEditTxnId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
-                <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button></>
+                :t.planned
+                  ?<button onClick={()=>markPaid(t.id)} style={{fontSize:10,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:6,padding:"2px 5px",color:C.sage,cursor:"pointer"}}>✓ paid</button>
+                  :<>
+                    {t.wasPlanned&&<button onClick={()=>revertToPlanned(t.id)} title="Return to planned" style={{fontSize:9,background:C.mist+"18",border:`1px solid ${C.mist}40`,borderRadius:5,padding:"2px 5px",color:C.mist,cursor:"pointer",whiteSpace:"nowrap"}}>↺ planned</button>}
+                    {t.wasAuto&&<button onClick={()=>revertToAuto(t.id)} title="Return to forecast" style={{fontSize:9,background:C.amber+"18",border:`1px solid ${C.amber}40`,borderRadius:5,padding:"2px 5px",color:C.amber,cursor:"pointer",whiteSpace:"nowrap"}}>↺ forecast</button>}
+                    <div style={{display:"flex",gap:2}}>
+                      <button onClick={()=>setEditTxnId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
+                      <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button>
+                    </div>
+                  </>
               }
             </div>
           </div>
@@ -921,13 +1185,27 @@ function RecurringPage({C,recurringDebts,addRecurring,editRecurring,delRecurring
 }
 
 // ── SETTINGS PAGE ────────────────────────────────────────────────
-function SettingsPage({C,lcStart,scuStart,onStartChange}){
+function SettingsPage({C,lcStart,scuStart,onStartChange,lcReset,scuReset,onResetChange}){
+  const [lcDraft,setLcDraft]=useState({date:today(),balance:""});
+  const [scuDraft,setScuDraft]=useState({date:today(),balance:""});
+
+  function applyReset(acct){
+    const draft=acct==="lc"?lcDraft:scuDraft;
+    if(!draft.date||draft.balance==="")return;
+    onResetChange(acct,{date:draft.date,balance:parseFloat(draft.balance)||0});
+  }
+  function clearReset(acct){
+    onResetChange(acct,null);
+  }
+
   return(
     <div className="fade">
       <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:22,fontWeight:700,marginBottom:14}}>Settings</div>
+
+      {/* Starting Balances */}
       <div style={{background:C.card,borderRadius:18,padding:"18px",border:`1px solid ${C.border}`,marginBottom:14,boxShadow:"0 2px 16px rgba(0,0,0,.07)"}}>
         <div style={{fontSize:10,color:C.lt,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:14}}>Starting Balances</div>
-        <div style={{fontSize:12,color:C.sub,marginBottom:16,lineHeight:1.6}}>Opening balance for each account. All transactions calculate running balances from here.</div>
+        <div style={{fontSize:12,color:C.sub,marginBottom:16,lineHeight:1.6}}>Opening balance for each account when no checkpoint is set.</div>
         {[{k:"lc",l:"LC / Main Checking",c:C.blush,v:lcStart},{k:"scu",l:"SCU Checking",c:C.sage,v:scuStart}].map(a=>(
           <div key={a.k} style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:600,marginBottom:7,display:"flex",alignItems:"center",gap:8}}>
@@ -942,6 +1220,65 @@ function SettingsPage({C,lcStart,scuStart,onStartChange}){
           </div>
         ))}
       </div>
+
+      {/* Balance Checkpoints / Reconcile */}
+      <div style={{background:C.card,borderRadius:18,padding:"18px",border:`1px solid ${C.border}`,marginBottom:14,boxShadow:"0 2px 16px rgba(0,0,0,.07)"}}>
+        <div style={{fontSize:10,color:C.lt,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:6}}>Balance Checkpoints</div>
+        <div style={{fontSize:12,color:C.sub,marginBottom:16,lineHeight:1.6}}>
+          If your ledger gets off, set a checkpoint date and your verified bank balance. Transactions before that date are ignored — the ledger resets from there.
+        </div>
+
+        {[
+          {k:"lc",l:"LC / Main Checking",c:C.blush,reset:lcReset,draft:lcDraft,setDraft:setLcDraft},
+          {k:"scu",l:"SCU Checking",c:C.sage,reset:scuReset,draft:scuDraft,setDraft:setScuDraft},
+        ].map(a=>(
+          <div key={a.k} style={{marginBottom:a.k==="lc"?20:0}}>
+            <div style={{fontSize:12,fontWeight:700,marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:9,height:9,borderRadius:"50%",background:a.c}}/>
+              {a.l}
+            </div>
+
+            {/* Active checkpoint banner */}
+            {a.reset&&(
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",borderRadius:10,background:a.c+"14",border:`1.5px solid ${a.c}40`,marginBottom:10}}>
+                <div>
+                  <div style={{fontSize:10,color:a.c,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:2}}>Active Checkpoint</div>
+                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:700,color:a.c}}>{fmt(parseFloat(a.reset.balance)||0)}</div>
+                  <div style={{fontSize:11,color:C.lt}}>as of {a.reset.date}</div>
+                </div>
+                <button onClick={()=>clearReset(a.k)}
+                  style={{fontSize:11,color:C.danger,background:C.danger+"10",border:`1px solid ${C.danger}30`,borderRadius:8,padding:"6px 10px",cursor:"pointer",fontWeight:700}}>
+                  Clear
+                </button>
+              </div>
+            )}
+
+            {/* Set new checkpoint form */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+              <div>
+                <div style={{fontSize:10,color:C.lt,marginBottom:3}}>{a.reset?"New checkpoint date":"Checkpoint date"}</div>
+                <input type="date" value={a.draft.date} onChange={e=>a.setDraft(d=>({...d,date:e.target.value}))}
+                  style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${a.c}30`,background:a.c+"08",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Verified balance ($)</div>
+                <div style={{position:"relative"}}>
+                  <span style={{position:"absolute",left:9,top:"50%",transform:"translateY(-50%)",fontSize:14,fontFamily:"'Cormorant Garamond',serif",fontWeight:600,color:a.c}}>$</span>
+                  <input type="number" step="0.01" placeholder="0.00" value={a.draft.balance}
+                    onChange={e=>a.setDraft(d=>({...d,balance:e.target.value}))}
+                    style={{width:"100%",padding:"8px 8px 8px 22px",borderRadius:10,border:`1.5px solid ${a.c}30`,background:a.c+"08",fontSize:15,fontFamily:"'Cormorant Garamond',serif",fontWeight:700,color:a.c,outline:"none",boxSizing:"border-box"}}/>
+                </div>
+              </div>
+            </div>
+            <button onClick={()=>applyReset(a.k)}
+              style={{width:"100%",padding:"10px",borderRadius:11,background:a.c+"1A",border:`1.5px solid ${a.c}45`,fontSize:13,fontWeight:700,color:a.c,cursor:"pointer"}}>
+              {a.reset?"Update Checkpoint":"Set Checkpoint"}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* How it works */}
       <div style={{background:C.card,borderRadius:18,padding:"16px 18px",border:`1px solid ${C.border}`,boxShadow:"0 2px 16px rgba(0,0,0,.07)"}}>
         <div style={{fontSize:10,color:C.lt,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:12}}>How Auto-Scheduling Works</div>
         {[
@@ -962,6 +1299,22 @@ function SettingsPage({C,lcStart,scuStart,onStartChange}){
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+
+<script>
+// On iOS, window.navigator.standalone is true when running as installed PWA
+// Adjust theme-color when dark mode preference changes
+const darkMeta=document.querySelector('meta[name="theme-color"][media]');
+try{
+  const stored=localStorage.getItem("lgr-dark");
+  if(stored==="1"){
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m=>{
+      if(m.getAttribute("media")==="(prefers-color-scheme: dark)")
+        m.removeAttribute("media");
+      else m.setAttribute("media","(prefers-color-scheme: light)");
+    });
+  }
+}catch(e){}
 </script>
 </body>
 </html>
