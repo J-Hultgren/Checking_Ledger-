@@ -2,25 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
 <title>Checking Ledger</title>
-
-<!-- PWA -->
 <link rel="manifest" href="manifest.json"/>
-<meta name="theme-color" content="#C9907A" media="(prefers-color-scheme: light)"/>
-<meta name="theme-color" content="#1A110C" media="(prefers-color-scheme: dark)"/>
-
-<!-- iOS -->
-<meta name="apple-mobile-web-app-capable" content="yes"/>
-<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
-<meta name="apple-mobile-web-app-title" content="Ledger"/>
-<link rel="apple-touch-icon" href="icon.svg"/>
-
-<!-- Android / general -->
-<meta name="mobile-web-app-capable" content="yes"/>
-<meta name="application-name" content="Ledger"/>
-<link rel="icon" type="image/svg+xml" href="icon.svg"/>
-
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Lato:wght@400;700&display=swap" rel="stylesheet"/>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -30,9 +14,6 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-tap-highlight-color:transparent}
 body{font-family:'Lato',sans-serif;overscroll-behavior:none;transition:background .35s,color .35s}
-/* Safe area for iOS notch / home indicator */
-.safe-top{padding-top:env(safe-area-inset-top)}
-.safe-bottom{padding-bottom:calc(env(safe-area-inset-bottom) + 30px)}
 input[type=number]::-webkit-inner-spin-button,
 input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
 input[type=number]{-moz-appearance:textfield}
@@ -203,28 +184,6 @@ function generateAutoTxns(year,month,recurringDebts,incomeStreams){
 function App(){
   const now=new Date();
   const [tab,setTab]=useState("calendar");
-  const [installPrompt,setInstallPrompt]=useState(null);
-  const [installable,setInstallable]=useState(false);
-  const [installed,setInstalled]=useState(false);
-
-  useEffect(()=>{
-    // Register service worker
-    if("serviceWorker" in navigator){
-      navigator.serviceWorker.register("./sw.js").catch(()=>{});
-    }
-    // PWA install prompt
-    const handler=e=>{e.preventDefault();setInstallPrompt(e);setInstallable(true);};
-    window.addEventListener("beforeinstallprompt",handler);
-    window.addEventListener("appinstalled",()=>{setInstallable(false);setInstalled(true);});
-    return()=>window.removeEventListener("beforeinstallprompt",handler);
-  },[]);
-
-  async function installApp(){
-    if(!installPrompt)return;
-    installPrompt.prompt();
-    const{outcome}=await installPrompt.userChoice;
-    if(outcome==="accepted"){setInstallable(false);setInstalled(true);}
-  }
   const [viewYear,setViewYear]=useState(now.getFullYear());
   const [viewMonth,setViewMonth]=useState(now.getMonth());
   const [loading,setLoading]=useState(true);
@@ -455,11 +414,11 @@ function App(){
     actualLastLc,actualLastScu,actualWithBal,monthSummary,darkMode,setDarkMode};
 
   return(
-    <div style={{minHeight:"100vh",background:C.bgGrad,transition:"background .35s"}} className="safe-bottom">
+    <div style={{minHeight:"100vh",background:C.bgGrad,paddingBottom:30,transition:"background .35s"}}>
       <div style={{position:"fixed",top:-60,right:-60,width:220,height:220,borderRadius:"60% 40% 70% 30%/50% 60% 40% 50%",background:"radial-gradient(circle,rgba(222,188,181,.25) 0%,transparent 70%)",pointerEvents:"none",zIndex:0}}/>
 
       {/* Header */}
-      <div style={{position:"sticky",top:0,zIndex:30,background:C.nav,backdropFilter:"blur(16px)",borderBottom:`1px solid ${C.div}`,padding:"10px 14px 0"}} className="safe-top">
+      <div style={{position:"sticky",top:0,zIndex:30,background:C.nav,backdropFilter:"blur(16px)",borderBottom:`1px solid ${C.div}`,padding:"10px 14px 0"}}>
 
         {/* Row 1: title + dark toggle + balances */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8,gap:8}}>
@@ -471,12 +430,6 @@ function App(){
                 style={{background:"none",border:`1px solid ${C.div}`,borderRadius:7,padding:"3px 6px",fontSize:13,cursor:"pointer",color:C.lt,lineHeight:1}}>
                 {darkMode?"☀️":"🌙"}
               </button>
-              {installable&&!installed&&(
-                <button onClick={installApp} title="Install app"
-                  style={{background:C.blush+"18",border:`1px solid ${C.blush}40`,borderRadius:7,padding:"3px 8px",fontSize:11,cursor:"pointer",color:C.blush,fontWeight:700,lineHeight:1}}>
-                  ⬇ Install
-                </button>
-              )}
               <div style={{fontSize:9,color:syncColor}}>{syncLabel}</div>
             </div>
           </div>
@@ -1299,22 +1252,6 @@ function SettingsPage({C,lcStart,scuStart,onStartChange,lcReset,scuReset,onReset
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
-</script>
-
-<script>
-// On iOS, window.navigator.standalone is true when running as installed PWA
-// Adjust theme-color when dark mode preference changes
-const darkMeta=document.querySelector('meta[name="theme-color"][media]');
-try{
-  const stored=localStorage.getItem("lgr-dark");
-  if(stored==="1"){
-    document.querySelectorAll('meta[name="theme-color"]').forEach(m=>{
-      if(m.getAttribute("media")==="(prefers-color-scheme: dark)")
-        m.removeAttribute("media");
-      else m.setAttribute("media","(prefers-color-scheme: light)");
-    });
-  }
-}catch(e){}
 </script>
 </body>
 </html>
