@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
 <title>Checking Ledger</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Lato:wght@400;700&display=swap" rel="stylesheet"/>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -11,52 +11,63 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#F9F3EE;font-family:'Lato',sans-serif;color:#3D2E26}
+html{-webkit-tap-highlight-color:transparent}
+body{background:#F9F3EE;font-family:'Lato',sans-serif;color:#3D2E26;overscroll-behavior:none}
 input[type=number]::-webkit-inner-spin-button,
 input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
 input[type=number]{-moz-appearance:textfield}
 ::-webkit-scrollbar{width:0}
+.fade{animation:fu .22s ease forwards}
+@keyframes fu{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect,useRef,useMemo}=React;
+const {useState,useEffect,useRef,useMemo,useCallback}=React;
 
 const SB=window.supabase.createClient(
   "https://irmtvjxlntozigbqxhvm.supabase.co",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlybXR2anhsbnRvemlnYnF4aHZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4NTkzMTQsImV4cCI6MjA5MjQzNTMxNH0.nyIZx7Z0GnHEIlZpBlN6TzHHsf7tGuhdvWECdpcQ-a0"
 );
 
+// ── Colors ───────────────────────────────────────────────────────
 const C={
-  blush:"#C9907A",sage:"#7A9A80",mist:"#9A7890",
+  blush:"#C9907A",sage:"#7A9A80",mist:"#9A7890",amber:"#C4944A",
   text:"#3D2E26",lt:"#B09080",sub:"#967060",
-  danger:"#C05040",card:"rgba(255,255,255,0.82)",
-  border:"rgba(255,255,255,0.92)",div:"rgba(201,144,122,0.12)"
+  danger:"#C05040",ok:"#4A8A5A",
+  card:"rgba(255,255,255,0.84)",
+  border:"rgba(255,255,255,0.94)",
+  div:"rgba(201,144,122,0.13)",
+  nav:"rgba(255,255,255,0.95)",
 };
 
+// ── Helpers ──────────────────────────────────────────────────────
 const fmt=v=>v===null||v===undefined?"—":
   new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(v);
 
-const fmtDate=s=>{
-  if(!s)return"";
-  const d=new Date(s+"T12:00:00");
-  return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
-};
-
 const today=()=>new Date().toISOString().split("T")[0];
 
-const PRESETS=[
-  "TP Paycheck","XE Paycheck","Mortgage Draft","Avant","SoFi","Upstart",
-  "Upgrade","Best Egg","Affirm","Citi AA","Citi","Barclay","Amex",
-  "Dance","SCU Equity","Google Fi","Fidium + Netflix","YouTube Premium",
-  "Hulu","LFOD","EZ Pass Reload","Arlo Security","Trading",
-  "Tax Savings","House","Investing"
-];
+const pad=n=>String(n).padStart(2,"0");
 
-const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const MONTH_NAMES=["January","February","March","April","May","June",
+  "July","August","September","October","November","December"];
+const DAY_NAMES=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
+// Days in a month
+const daysInMonth=(y,m)=>new Date(y,m+1,0).getDate();
+
+// Generate ISO date string for given y/m/d
+const isoDate=(y,m,d)=>`${y}-${pad(m+1)}-${pad(d)}`;
+
+// Parse ISO to {y,m,d}
+const parseISO=s=>{
+  if(!s)return null;
+  const[y,m,d]=s.split("-").map(Number);
+  return{y,m:m-1,d};
+};
+
+// ── Supabase ─────────────────────────────────────────────────────
 async function dbGet(k){
   const{data,error}=await SB.from("budget_data").select("*").eq("id","lgr-"+k).single();
   return(!data||error)?null:data;
@@ -68,157 +79,325 @@ async function dbSet(k,v){
   });
 }
 
+// ── Generate auto-transactions for a month ───────────────────────
+// Returns array of virtual txn objects (not saved — overlaid at display time)
+function generateAutoTxns(year,month,recurringDebts,incomeStreams){
+  const result=[];
+  const dim=daysInMonth(year,month);
+
+  // Recurring debts
+  recurringDebts.filter(r=>r.active!==false).forEach(r=>{
+    const day=parseInt(r.day)||1;
+    const d=Math.min(day,dim);
+    result.push({
+      id:"auto-debt-"+r.id+"-"+year+"-"+month,
+      date:isoDate(year,month,d),
+      desc:r.desc,
+      amount:-(Math.abs(parseFloat(r.amount)||0)),
+      account:r.account||"lc",
+      note:"Auto · recurring",
+      isAuto:true,
+      autoType:"debt",
+    });
+  });
+
+  // Income streams
+  incomeStreams.filter(s=>s.active!==false&&s.amount&&s.lastDate).forEach(s=>{
+    const amt=parseFloat(s.amount)||0;
+    if(!amt)return;
+    const freq=s.frequency||"biweekly";
+    const last=parseISO(s.lastDate);
+    if(!last)return;
+
+    // Walk forward from last date to find all pay dates in this month
+    let cursor=new Date(last.y,last.m,last.d);
+    const start=new Date(year,month,1);
+    const end=new Date(year,month+1,0);
+
+    // Step size in days
+    const step=freq==="weekly"?7:freq==="biweekly"?14:freq==="monthly"?0:14;
+
+    if(freq==="monthly"){
+      // Use same day-of-month as last paycheck
+      const d=Math.min(last.d,dim);
+      result.push({
+        id:"auto-inc-"+s.id+"-"+year+"-"+month,
+        date:isoDate(year,month,d),
+        desc:s.name||"Paycheck",
+        amount:amt,
+        account:s.account||"lc",
+        note:"Auto · "+freq,
+        isAuto:true,
+        autoType:"income",
+      });
+      return;
+    }
+
+    // Move cursor to first occurrence in or before the target month
+    // Go backwards if cursor is after start
+    while(cursor>end) cursor=new Date(cursor.getTime()-step*86400000);
+    // Go backwards to find earliest occurrence in month window
+    while(cursor>=start) cursor=new Date(cursor.getTime()-step*86400000);
+    // Now step forward into the month
+    cursor=new Date(cursor.getTime()+step*86400000);
+
+    let safety=0;
+    while(cursor<=end&&safety<10){
+      safety++;
+      if(cursor>=start){
+        const d=cursor.getDate();
+        result.push({
+          id:"auto-inc-"+s.id+"-"+year+"-"+month+"-"+d,
+          date:isoDate(year,month,d),
+          desc:s.name||"Paycheck",
+          amount:amt,
+          account:s.account||"lc",
+          note:"Auto · "+freq,
+          isAuto:true,
+          autoType:"income",
+        });
+      }
+      cursor=new Date(cursor.getTime()+step*86400000);
+    }
+  });
+
+  return result.sort((a,b)=>a.date.localeCompare(b.date));
+}
+
+// ════════════════════════════════════════════════════════════════
+//  APP
+// ════════════════════════════════════════════════════════════════
 function App(){
   const now=new Date();
-  const [tab,setTab]=useState("ledger");
+  const [tab,setTab]=useState("calendar");
+  const [viewYear,setViewYear]=useState(now.getFullYear());
+  const [viewMonth,setViewMonth]=useState(now.getMonth());
   const [loading,setLoading]=useState(true);
   const [sync,setSync]=useState("idle");
+  const tmr=useRef({});
+
+  // Data
   const [txns,setTxns]=useState([]);
   const [lcStart,setLcStart]=useState(3385);
   const [scuStart,setScuStart]=useState(1522.99);
-  const [showForm,setShowForm]=useState(false);
-  const [editId,setEditId]=useState(null);
-  const [filter,setFilter]=useState({desc:"",acct:"all"});
-  const tmr=useRef({});
+  const [recurringDebts,setRecurringDebts]=useState([]);
+  const [incomeStreams,setIncomeStreams]=useState([]);
+
+  // UI state
+  const [showAddTxn,setShowAddTxn]=useState(false);
+  const [editTxnId,setEditTxnId]=useState(null);
+  const [acctFilter,setAcctFilter]=useState("all");
+  const [descFilter,setDescFilter]=useState("");
 
   useEffect(()=>{
     (async()=>{
       setLoading(true);
       try{
-        const[tR,sR]=await Promise.all([dbGet("txns"),dbGet("settings")]);
+        const[tR,sR,rR,iR]=await Promise.all([
+          dbGet("txns"),dbGet("settings"),
+          dbGet("recurring"),dbGet("income"),
+        ]);
         if(tR?.budgets?.txns)setTxns(tR.budgets.txns);
-        if(sR?.budgets?.lcStart!==undefined)setLcStart(sR.budgets.lcStart);
-        if(sR?.budgets?.scuStart!==undefined)setScuStart(sR.budgets.scuStart);
+        if(sR?.budgets){
+          if(sR.budgets.lcStart!=null)setLcStart(sR.budgets.lcStart);
+          if(sR.budgets.scuStart!=null)setScuStart(sR.budgets.scuStart);
+        }
+        if(rR?.budgets?.list)setRecurringDebts(rR.budgets.list);
+        if(iR?.budgets?.list)setIncomeStreams(iR.budgets.list);
       }catch(e){console.error(e);}
       setLoading(false);
     })();
   },[]);
 
-  function save(key,fn){
-    clearTimeout(tmr.current[key]);
-    tmr.current[key]=setTimeout(async()=>{
+  function sv(k,fn){
+    clearTimeout(tmr.current[k]);
+    tmr.current[k]=setTimeout(async()=>{
       setSync("saving");
       try{await fn();setSync("saved");setTimeout(()=>setSync("idle"),2500);}
       catch{setSync("error");}
     },600);
   }
 
-  function saveTxns(t){save("t",()=>dbSet("txns",{txns:t}));}
-  function saveSettings(lc,scu){save("s",()=>dbSet("settings",{lcStart:lc,scuStart:scu}));}
+  const saveTxns=t=>sv("t",()=>dbSet("txns",{txns:t}));
+  const saveSettings=(lc,scu)=>sv("s",()=>dbSet("settings",{lcStart:lc,scuStart:scu}));
+  const saveRecurring=r=>sv("r",()=>dbSet("recurring",{list:r}));
+  const saveIncome=i=>sv("i",()=>dbSet("income",{list:i}));
 
+  // Auto-transactions for current view month
+  const autoTxns=useMemo(()=>
+    generateAutoTxns(viewYear,viewMonth,recurringDebts,incomeStreams),
+    [viewYear,viewMonth,recurringDebts,incomeStreams]
+  );
+
+  // All txns including auto, sorted by date
+  const allTxns=useMemo(()=>{
+    // Merge manual txns with auto txns — auto txns only show if no manual override exists for same desc+date
+    const manualKeys=new Set(txns.map(t=>t.date+"|"+t.desc+"|"+t.account));
+    const filteredAuto=autoTxns.filter(a=>!manualKeys.has(a.date+"|"+a.desc+"|"+a.account));
+    return[...txns,...filteredAuto].sort((a,b)=>a.date.localeCompare(b.date));
+  },[txns,autoTxns]);
+
+  // Running balances across ALL transactions (all time)
+  const withBal=useMemo(()=>{
+    let lc=lcStart,scu=scuStart;
+    return allTxns.map(t=>{
+      if(t.account==="lc")lc=Math.round((lc+t.amount)*100)/100;
+      else scu=Math.round((scu+t.amount)*100)/100;
+      return{...t,thisBal:t.account==="lc"?lc:scu,lcNow:lc,scuNow:scu};
+    });
+  },[allTxns,lcStart,scuStart]);
+
+  const lastLc=withBal.length?withBal[withBal.length-1].lcNow:lcStart;
+  const lastScu=withBal.length?withBal[withBal.length-1].scuNow:scuStart;
+
+  // Txns for the viewed month
+  const monthTxns=useMemo(()=>{
+    const prefix=`${viewYear}-${pad(viewMonth+1)}`;
+    let rows=withBal.filter(t=>t.date.startsWith(prefix));
+    if(acctFilter!=="all")rows=rows.filter(t=>t.account===acctFilter);
+    if(descFilter)rows=rows.filter(t=>t.desc.toLowerCase().includes(descFilter.toLowerCase()));
+    return rows;
+  },[withBal,viewYear,viewMonth,acctFilter,descFilter]);
+
+  // Txns by day for calendar
+  const txnsByDay=useMemo(()=>{
+    const map={};
+    monthTxns.forEach(t=>{
+      const d=parseInt(t.date.split("-")[2]);
+      if(!map[d])map[d]=[];
+      map[d].push(t);
+    });
+    return map;
+  },[monthTxns]);
+
+  // Handlers
   function addTxn(f){
     const t=[...txns,{id:Date.now().toString(),...f,amount:parseFloat(f.amount)||0}]
-      .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
-    setTxns(t);saveTxns(t);setShowForm(false);
+      .sort((a,b)=>a.date.localeCompare(b.date));
+    setTxns(t);saveTxns(t);setShowAddTxn(false);
   }
-
   function delTxn(id){
     if(!confirm("Delete this transaction?"))return;
-    const t=txns.filter(x=>x.id!==id);
-    setTxns(t);saveTxns(t);
+    const t=txns.filter(x=>x.id!==id);setTxns(t);saveTxns(t);
   }
-
   function editTxn(f){
     const t=txns.map(x=>x.id===f.id?{...f,amount:parseFloat(f.amount)||0}:x)
-      .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
-    setTxns(t);saveTxns(t);setEditId(null);
+      .sort((a,b)=>a.date.localeCompare(b.date));
+    setTxns(t);saveTxns(t);setEditTxnId(null);
   }
-
+  // "Commit" an auto-txn (make it manual so it's editable/deletable)
+  function commitAuto(auto){
+    const t=[...txns,{...auto,id:Date.now().toString(),isAuto:false}]
+      .sort((a,b)=>a.date.localeCompare(b.date));
+    setTxns(t);saveTxns(t);
+  }
   function onStartChange(acct,val){
     const v=parseFloat(val)||0;
     if(acct==="lc"){setLcStart(v);saveSettings(v,scuStart);}
     else{setScuStart(v);saveSettings(lcStart,v);}
   }
+  function addRecurring(r){const l=[...recurringDebts,r];setRecurringDebts(l);saveRecurring(l);}
+  function editRecurring(r){const l=recurringDebts.map(x=>x.id===r.id?r:x);setRecurringDebts(l);saveRecurring(l);}
+  function delRecurring(id){const l=recurringDebts.filter(x=>x.id!==id);setRecurringDebts(l);saveRecurring(l);}
+  function addIncome(s){const l=[...incomeStreams,s];setIncomeStreams(l);saveIncome(l);}
+  function editIncome(s){const l=incomeStreams.map(x=>x.id===s.id?s:x);setIncomeStreams(l);saveIncome(l);}
+  function delIncome(id){const l=incomeStreams.filter(x=>x.id!==id);setIncomeStreams(l);saveIncome(l);}
 
-  // Compute running balances
-  const withBal=useMemo(()=>{
-    let lc=lcStart,scu=scuStart;
-    return txns.map(t=>{
-      if(t.account==="lc")lc=Math.round((lc+t.amount)*100)/100;
-      else scu=Math.round((scu+t.amount)*100)/100;
-      return{...t,
-        thisBal:t.account==="lc"?lc:scu,
-        lcNow:lc,scuNow:scu
-      };
-    });
-  },[txns,lcStart,scuStart]);
-
-  const lastLc=withBal.length?withBal[withBal.length-1].lcNow:lcStart;
-  const lastScu=withBal.length?withBal[withBal.length-1].scuNow:scuStart;
-
-  const filtered=useMemo(()=>{
-    let r=withBal;
-    if(filter.acct!=="all")r=r.filter(t=>t.account===filter.acct);
-    if(filter.desc)r=r.filter(t=>t.desc.toLowerCase().includes(filter.desc.toLowerCase()));
-    return r;
-  },[withBal,filter]);
-
-  const dateStr=`${DAYS[now.getDay()]}, ${MONTHS[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
   const syncLabel={idle:"",saving:"Saving…",saved:"✓ Synced",error:"⚠ Error"}[sync];
   const syncColor={idle:"transparent",saving:C.blush,saved:C.sage,error:C.danger}[sync];
+  const nowD=new Date();
+  const dateStr=`${DAY_NAMES[nowD.getDay()]}, ${MONTH_NAMES[nowD.getMonth()]} ${nowD.getDate()}, ${nowD.getFullYear()}`;
+
+  const TABS=[
+    {id:"calendar",l:"📅 Calendar"},
+    {id:"ledger",l:"📒 Ledger"},
+    {id:"recurring",l:"🔁 Recurring"},
+    {id:"settings",l:"⚙️ Settings"},
+  ];
+
+  const shared={C,txns,allTxns,withBal,monthTxns,txnsByDay,viewYear,viewMonth,
+    setViewYear,setViewMonth,showAddTxn,setShowAddTxn,editTxnId,setEditTxnId,
+    addTxn,delTxn,editTxn,commitAuto,acctFilter,setAcctFilter,descFilter,setDescFilter,
+    recurringDebts,addRecurring,editRecurring,delRecurring,
+    incomeStreams,addIncome,editIncome,delIncome,
+    lcStart,scuStart,onStartChange,lastLc,lastScu};
 
   return(
-    <div style={{minHeight:"100vh",background:"linear-gradient(145deg,#F9F3EE,#EDE3DA)",paddingBottom:40}}>
+    <div style={{minHeight:"100vh",background:"linear-gradient(145deg,#F9F3EE,#EDE3DA)",paddingBottom:30}}>
+      <div style={{position:"fixed",top:-60,right:-60,width:220,height:220,borderRadius:"60% 40% 70% 30%/50% 60% 40% 50%",background:"radial-gradient(circle,rgba(222,188,181,.25) 0%,transparent 70%)",pointerEvents:"none",zIndex:0}}/>
 
       {/* Header */}
-      <div style={{position:"sticky",top:0,zIndex:20,background:"rgba(255,255,255,0.93)",backdropFilter:"blur(14px)",borderBottom:`1px solid ${C.div}`,padding:"12px 16px 10px"}}>
-        <div style={{fontSize:11,color:C.blush,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:2}}>{dateStr}</div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:24,fontWeight:700}}>Checking Ledger</div>
-          <div style={{fontSize:11,color:syncColor}}>{syncLabel}</div>
+      <div style={{position:"sticky",top:0,zIndex:30,background:C.nav,backdropFilter:"blur(14px)",borderBottom:`1px solid ${C.div}`,padding:"12px 16px 0"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+          <div>
+            <div style={{fontSize:10,color:C.blush,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:2}}>{dateStr}</div>
+            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:22,fontWeight:700,color:C.text,lineHeight:1}}>Checking Ledger</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:10,color:syncColor,marginBottom:4}}>{syncLabel}</div>
+            <div style={{display:"flex",gap:6}}>
+              {[{l:"LC",v:lastLc,c:C.blush},{l:"SCU",v:lastScu,c:C.sage}].map((a,i)=>(
+                <div key={i} style={{background:a.c+"14",borderRadius:9,padding:"4px 8px",border:`1px solid ${a.c}22`,textAlign:"right"}}>
+                  <div style={{fontSize:8,color:C.lt,textTransform:"uppercase",letterSpacing:"0.08em"}}>{a.l}</div>
+                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:13,fontWeight:700,color:a.c}}>{fmt(a.v)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* Balances */}
-        <div style={{display:"flex",gap:8,marginBottom:10}}>
-          {[
-            {l:"LC Checking",v:lastLc,c:C.blush},
-            {l:"SCU Checking",v:lastScu,c:C.sage},
-            {l:"Combined",v:lastLc+lastScu,c:C.mist}
-          ].map((a,i)=>(
-            <div key={i} style={{flex:1,background:a.c+"14",borderRadius:11,padding:"8px 9px",border:`1.5px solid ${a.c}22`}}>
-              <div style={{fontSize:9,color:C.lt,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:2}}>{a.l}</div>
-              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:15,fontWeight:700,color:a.c}}>{fmt(a.v)}</div>
-            </div>
-          ))}
+        {/* Month nav */}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <button onClick={()=>{if(viewMonth===0){setViewMonth(11);setViewYear(y=>y-1);}else setViewMonth(m=>m-1);}}
+            style={{background:C.blush+"14",border:`1px solid ${C.blush}28`,borderRadius:8,padding:"4px 10px",fontSize:14,color:C.blush,cursor:"pointer"}}>‹</button>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:17,fontWeight:700,color:C.text,flex:1,textAlign:"center"}}>{MONTH_NAMES[viewMonth]} {viewYear}</div>
+          <button onClick={()=>{if(viewMonth===11){setViewMonth(0);setViewYear(y=>y+1);}else setViewMonth(m=>m+1);}}
+            style={{background:C.blush+"14",border:`1px solid ${C.blush}28`,borderRadius:8,padding:"4px 10px",fontSize:14,color:C.blush,cursor:"pointer"}}>›</button>
         </div>
 
         {/* Tabs */}
-        <div style={{display:"flex",gap:6}}>
-          {[{id:"ledger",l:"📒 Ledger"},{id:"settings",l:"⚙️ Settings"}].map(t=>(
+        <div style={{display:"flex",gap:0,borderBottom:"none",overflowX:"auto",paddingBottom:0}}>
+          {TABS.map(t=>(
             <button key={t.id} onClick={()=>setTab(t.id)}
-              style={{padding:"5px 14px",borderRadius:20,border:`1.5px solid ${tab===t.id?C.blush+"50":C.div}`,background:tab===t.id?C.blush+"14":"transparent",fontSize:12,fontWeight:tab===t.id?700:400,color:tab===t.id?C.blush:C.lt,cursor:"pointer"}}>
+              style={{padding:"7px 12px",borderRadius:"10px 10px 0 0",border:"none",
+                background:tab===t.id?"rgba(255,255,255,0.95)":"transparent",
+                fontSize:11,fontWeight:tab===t.id?700:400,
+                color:tab===t.id?C.blush:C.lt,cursor:"pointer",whiteSpace:"nowrap",
+                borderBottom:tab===t.id?`2px solid ${C.blush}`:"2px solid transparent"}}>
               {t.l}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Pages */}
-      <div style={{maxWidth:560,margin:"0 auto",padding:"14px 14px 0"}}>
-        {loading?(
-          <div style={{textAlign:"center",padding:60,fontFamily:"'Cormorant Garamond',serif",fontSize:24,color:C.lt}}>Loading…</div>
-        ):tab==="ledger"?(
-          <LedgerPage C={C} filtered={filtered} txns={txns} showForm={showForm}
-            setShowForm={setShowForm} addTxn={addTxn} delTxn={delTxn} editTxn={editTxn}
-            editId={editId} setEditId={setEditId} filter={filter} setFilter={setFilter}/>
-        ):(
-          <SettingsPage C={C} lcStart={lcStart} scuStart={scuStart} onStartChange={onStartChange}/>
-        )}
+      {/* Content */}
+      <div style={{maxWidth:580,margin:"0 auto",padding:"14px 13px 0",position:"relative",zIndex:1}}>
+        {loading
+          ?<div style={{textAlign:"center",padding:60,fontFamily:"'Cormorant Garamond',serif",fontSize:24,color:C.lt}}>Loading…</div>
+          :tab==="calendar" ?<CalendarPage {...shared}/>
+          :tab==="ledger"   ?<LedgerPage   {...shared}/>
+          :tab==="recurring"?<RecurringPage {...shared}/>
+          :<SettingsPage {...shared}/>
+        }
       </div>
     </div>
   );
 }
 
-// ── FORM ─────────────────────────────────────────────────────────
+// ── PRESETS ──────────────────────────────────────────────────────
+const PRESETS=["TP Paycheck","XE Paycheck","Mortgage Draft","Avant","SoFi","Upstart",
+  "Upgrade","Best Egg","Affirm","Citi AA","Citi","Barclay","Amex","Dance",
+  "SCU Equity","Google Fi","Fidium + Netflix","YouTube Premium","Hulu",
+  "LFOD","EZ Pass Reload","Arlo Security","Trading","Tax Savings","House Repair","Investing"];
+
+// ── TRANSACTION FORM ─────────────────────────────────────────────
 function TxnForm({C,init,onSave,onCancel,title}){
   const [f,setF]=useState(init||{date:today(),desc:"",amount:"",account:"lc",note:""});
   const [showP,setShowP]=useState(false);
   const isPos=parseFloat(f.amount)>=0;
-
   return(
     <div style={{background:C.card,borderRadius:18,padding:"16px",border:`1px solid ${C.border}`,marginBottom:12,boxShadow:"0 2px 16px rgba(0,0,0,.07)"}}>
-      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:600,marginBottom:14}}>{title||"Add Transaction"}</div>
-
+      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:600,color:C.text,marginBottom:12}}>{title||"Add Transaction"}</div>
       {/* Date + Account */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
         <div>
@@ -228,17 +407,16 @@ function TxnForm({C,init,onSave,onCancel,title}){
         </div>
         <div>
           <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Account</div>
-          <div style={{display:"flex",gap:5}}>
+          <div style={{display:"flex",gap:5,height:36}}>
             {[{v:"lc",l:"LC",c:C.blush},{v:"scu",l:"SCU",c:C.sage}].map(a=>(
               <button key={a.v} onClick={()=>setF(x=>({...x,account:a.v}))}
-                style={{flex:1,padding:"8px 4px",borderRadius:9,border:`1.5px solid ${a.c}${f.account===a.v?"55":"22"}`,background:f.account===a.v?a.c+"18":"transparent",fontSize:13,fontWeight:f.account===a.v?700:400,color:a.c,cursor:"pointer"}}>
+                style={{flex:1,borderRadius:9,border:`1.5px solid ${a.c}${f.account===a.v?"55":"22"}`,background:f.account===a.v?a.c+"18":"transparent",fontSize:13,fontWeight:f.account===a.v?700:400,color:a.c,cursor:"pointer"}}>
                 {a.l}
               </button>
             ))}
           </div>
         </div>
       </div>
-
       {/* Description */}
       <div style={{marginBottom:8}}>
         <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Description</div>
@@ -247,19 +425,17 @@ function TxnForm({C,init,onSave,onCancel,title}){
           style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.blush}30`,background:C.blush+"08",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
         {showP&&(
           <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
-            {PRESETS.filter(p=>!f.desc||p.toLowerCase().includes(f.desc.toLowerCase())).slice(0,14).map(p=>(
+            {PRESETS.filter(p=>!f.desc||p.toLowerCase().includes(f.desc.toLowerCase())).slice(0,12).map(p=>(
               <button key={p} onClick={()=>{setF(x=>({...x,desc:p}));setShowP(false);}}
-                style={{padding:"3px 10px",borderRadius:99,border:`1px solid ${C.blush}28`,background:C.blush+"09",fontSize:11,color:C.sub,cursor:"pointer"}}>{p}</button>
+                style={{padding:"3px 9px",borderRadius:99,border:`1px solid ${C.blush}28`,background:C.blush+"09",fontSize:11,color:C.sub,cursor:"pointer"}}>{p}</button>
             ))}
-            <button onClick={()=>setShowP(false)}
-              style={{padding:"3px 8px",borderRadius:99,border:`1px solid ${C.div}`,background:"transparent",fontSize:10,color:C.lt,cursor:"pointer"}}>✕</button>
+            <button onClick={()=>setShowP(false)} style={{padding:"3px 7px",borderRadius:99,border:`1px solid ${C.div}`,background:"transparent",fontSize:10,color:C.lt,cursor:"pointer"}}>✕</button>
           </div>
         )}
       </div>
-
       {/* Amount */}
       <div style={{marginBottom:10}}>
-        <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Amount <span style={{fontWeight:400}}>(− withdrawal, + deposit)</span></div>
+        <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Amount <span style={{fontWeight:400,fontSize:10}}>(− withdrawal  + deposit)</span></div>
         <div style={{position:"relative"}}>
           <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:16,fontFamily:"'Cormorant Garamond',serif",fontWeight:600,color:isPos?C.sage:C.danger}}>$</span>
           <input type="number" step="0.01" value={f.amount} onChange={e=>setF(x=>({...x,amount:e.target.value}))}
@@ -269,11 +445,10 @@ function TxnForm({C,init,onSave,onCancel,title}){
         <div style={{display:"flex",gap:6,marginTop:6}}>
           <button onClick={()=>setF(x=>({...x,amount:"-"+Math.abs(parseFloat(x.amount)||0)}))}
             style={{flex:1,padding:"5px",borderRadius:8,border:`1px solid ${C.danger}28`,background:C.danger+"08",fontSize:11,color:C.danger,cursor:"pointer",fontWeight:600}}>− Withdrawal</button>
-          <button onClick={()=>setF(x=>({...x,amount:Math.abs(parseFloat(x.amount)||0)}))}
+          <button onClick={()=>setF(x=>({...x,amount:String(Math.abs(parseFloat(x.amount)||0))}))}
             style={{flex:1,padding:"5px",borderRadius:8,border:`1px solid ${C.sage}28`,background:C.sage+"08",fontSize:11,color:C.sage,cursor:"pointer",fontWeight:600}}>+ Deposit</button>
         </div>
       </div>
-
       {/* Note */}
       <div style={{marginBottom:14}}>
         <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Note (optional)</div>
@@ -281,7 +456,6 @@ function TxnForm({C,init,onSave,onCancel,title}){
           placeholder="Optional note…"
           style={{width:"100%",padding:"7px 10px",borderRadius:10,border:`1.5px solid ${C.div}`,background:"rgba(255,255,255,0.5)",fontSize:12,color:C.text,outline:"none",boxSizing:"border-box"}}/>
       </div>
-
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>onSave(f)}
           style={{flex:1,padding:"11px",borderRadius:11,background:C.blush+"20",border:`1.5px solid ${C.blush}45`,fontSize:13,fontWeight:700,color:C.blush,cursor:"pointer"}}>
@@ -296,41 +470,171 @@ function TxnForm({C,init,onSave,onCancel,title}){
   );
 }
 
-// ── LEDGER PAGE ───────────────────────────────────────────────────
-function LedgerPage({C,filtered,txns,showForm,setShowForm,addTxn,delTxn,editTxn,editId,setEditId,filter,setFilter}){
-  const grouped=useMemo(()=>{
-    const map={};
-    [...filtered].reverse().forEach(t=>{
-      const k=t.date?t.date.slice(0,7):"?";
-      if(!map[k])map[k]=[];
-      map[k].push(t);
-    });
-    return Object.entries(map).sort(([a],[b])=>b.localeCompare(a));
-  },[filtered]);
+// ── CALENDAR PAGE ────────────────────────────────────────────────
+function CalendarPage({C,viewYear,viewMonth,txnsByDay,monthTxns,withBal,commitAuto,delTxn,setEditTxnId,editTxnId,editTxn,addTxn,showAddTxn,setShowAddTxn}){
+  const dim=daysInMonth(viewYear,viewMonth);
+  const firstDow=new Date(viewYear,viewMonth,1).getDay(); // 0=Sun
+  const today=new Date().toISOString().split("T")[0];
+
+  // Month totals
+  const prefix=`${viewYear}-${pad(viewMonth+1)}`;
+  const deps=monthTxns.reduce((s,t)=>s+(t.amount>0?t.amount:0),0);
+  const wds=monthTxns.reduce((s,t)=>s+(t.amount<0?t.amount:0),0);
+
+  // Balances at start of month (last txn before this month)
+  const beforeMonth=withBal.filter(t=>t.date<prefix+"-01");
+  const startLc=beforeMonth.length?beforeMonth[beforeMonth.length-1].lcNow:null;
+  const startScu=beforeMonth.length?beforeMonth[beforeMonth.length-1].scuNow:null;
+  const endMonth=withBal.filter(t=>t.date.startsWith(prefix));
+  const endLc=endMonth.length?endMonth[endMonth.length-1].lcNow:startLc;
+  const endScu=endMonth.length?endMonth[endMonth.length-1].scuNow:startScu;
+
+  const [selectedDay,setSelectedDay]=useState(null);
+  const selectedTxns=selectedDay?txnsByDay[selectedDay]||[]:[];
 
   return(
-    <div>
-      {!showForm&&!editId&&(
-        <button onClick={()=>setShowForm(true)}
-          style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:14,background:C.blush+"10",border:`1.5px dashed ${C.blush}45`,fontSize:14,fontWeight:700,color:C.blush,cursor:"pointer"}}>
+    <div className="fade">
+      {/* Month summary */}
+      <div style={{background:C.card,borderRadius:16,padding:"13px 16px",border:`1px solid ${C.border}`,marginBottom:12,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
+          {[
+            {l:"Deposits",v:deps,c:C.sage},
+            {l:"Withdrawals",v:wds,c:C.danger},
+            {l:"Net",v:deps+wds,c:deps+wds>=0?C.sage:C.danger},
+            {l:"Transactions",v:monthTxns.length,c:C.mist,raw:true},
+          ].map((s,i)=>(
+            <div key={i} style={{textAlign:"center"}}>
+              <div style={{fontSize:9,color:C.lt,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>{s.l}</div>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:15,fontWeight:700,color:s.c}}>{s.raw?s.v:fmt(s.v)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Mini calendar grid */}
+      <div style={{background:C.card,borderRadius:18,padding:"14px",border:`1px solid ${C.border}`,marginBottom:12,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
+        {/* Day headers */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:6}}>
+          {DAY_NAMES.map(d=>(
+            <div key={d} style={{textAlign:"center",fontSize:9,color:C.lt,fontWeight:700,letterSpacing:"0.08em"}}>{d}</div>
+          ))}
+        </div>
+        {/* Calendar cells */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
+          {/* Empty cells before first day */}
+          {Array.from({length:firstDow}).map((_,i)=><div key={"e"+i}/>)}
+          {/* Day cells */}
+          {Array.from({length:dim}).map((_,i)=>{
+            const d=i+1;
+            const dayTxns=txnsByDay[d]||[];
+            const dateStr=isoDate(viewYear,viewMonth,d);
+            const isToday=dateStr===today;
+            const isSelected=selectedDay===d;
+            const hasAuto=dayTxns.some(t=>t.isAuto);
+            const hasDep=dayTxns.some(t=>t.amount>0);
+            const hasWd=dayTxns.some(t=>t.amount<0);
+            return(
+              <button key={d} onClick={()=>setSelectedDay(isSelected?null:d)}
+                style={{aspectRatio:"1",borderRadius:10,border:`1.5px solid ${isSelected?C.blush+"60":isToday?C.sage+"50":"transparent"}`,
+                  background:isSelected?C.blush+"18":isToday?C.sage+"10":"rgba(255,255,255,0.5)",
+                  cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:2,position:"relative"}}>
+                <span style={{fontSize:12,fontWeight:isToday||isSelected?700:400,color:isSelected?C.blush:isToday?C.sage:C.text}}>{d}</span>
+                {dayTxns.length>0&&(
+                  <div style={{display:"flex",gap:2,marginTop:2}}>
+                    {hasDep&&<div style={{width:4,height:4,borderRadius:"50%",background:C.sage}}/>}
+                    {hasWd&&<div style={{width:4,height:4,borderRadius:"50%",background:C.danger}}/>}
+                    {hasAuto&&<div style={{width:4,height:4,borderRadius:"50%",background:C.amber,opacity:.7}}/>}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {/* Legend */}
+        <div style={{display:"flex",gap:12,justifyContent:"center",marginTop:10,fontSize:10,color:C.lt}}>
+          {[[C.sage,"Deposit"],[C.danger,"Withdrawal"],[C.amber,"Auto/Recurring"]].map(([c,l])=>(
+            <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:c}}/>
+              <span>{l}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Selected day detail */}
+      {selectedDay&&(
+        <div style={{background:C.card,borderRadius:16,padding:"13px 15px",border:`1.5px solid ${C.blush}25`,marginBottom:12,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:700,marginBottom:10}}>
+            {MONTH_NAMES[viewMonth]} {selectedDay}, {viewYear}
+          </div>
+          {selectedTxns.length===0?(
+            <div style={{fontSize:13,color:C.lt,textAlign:"center",padding:"12px 0"}}>No transactions this day</div>
+          ):selectedTxns.map((t,i)=>{
+            const col=t.account==="lc"?C.blush:C.sage;
+            const neg=t.amount<0;
+            if(editTxnId===t.id){
+              return <TxnForm key={t.id} C={C} init={{...t}} title="Edit" onSave={editTxn} onCancel={()=>setEditTxnId(null)}/>;
+            }
+            return(
+              <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,background:t.isAuto?C.amber+"0A":"rgba(255,255,255,0.6)",borderRadius:10,padding:"9px 10px",border:`1px solid ${t.isAuto?C.amber+"25":C.div}`,marginBottom:i<selectedTxns.length-1?6:0}}>
+                <div style={{width:7,height:7,borderRadius:"50%",background:col,flexShrink:0}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.desc}</div>
+                  <div style={{fontSize:9,color:col,textTransform:"uppercase",letterSpacing:"0.08em"}}>{t.account==="lc"?"LC":"SCU"} · Bal: {fmt(t.thisBal)}</div>
+                  {t.isAuto&&<div style={{fontSize:9,color:C.amber,marginTop:1}}>⟳ Auto-scheduled</div>}
+                </div>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:neg?C.danger:C.sage,flexShrink:0}}>
+                  {neg?"":"+"}{ new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
+                </div>
+                <div style={{display:"flex",gap:4,flexShrink:0}}>
+                  {t.isAuto
+                    ?<button onClick={()=>commitAuto(t)} title="Confirm this transaction" style={{fontSize:11,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:7,padding:"3px 6px",color:C.sage,cursor:"pointer"}}>✓</button>
+                    :<><button onClick={()=>setEditTxnId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
+                    <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button></>
+                  }
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add transaction */}
+      {!showAddTxn?(
+        <button onClick={()=>setShowAddTxn(true)}
+          style={{width:"100%",padding:"11px",borderRadius:14,background:C.blush+"10",border:`1.5px dashed ${C.blush}45`,fontSize:13,fontWeight:700,color:C.blush,cursor:"pointer"}}>
+          + Add Transaction
+        </button>
+      ):(
+        <TxnForm C={C} onSave={addTxn} onCancel={()=>setShowAddTxn(false)}
+          init={{date:selectedDay?isoDate(viewYear,viewMonth,selectedDay):today(),desc:"",amount:"",account:"lc",note:""}}/>
+      )}
+    </div>
+  );
+}
+
+// ── LEDGER PAGE ──────────────────────────────────────────────────
+function LedgerPage({C,monthTxns,showAddTxn,setShowAddTxn,editTxnId,setEditTxnId,addTxn,delTxn,editTxn,commitAuto,acctFilter,setAcctFilter,descFilter,setDescFilter,viewYear,viewMonth}){
+  return(
+    <div className="fade">
+      {!showAddTxn&&!editTxnId&&(
+        <button onClick={()=>setShowAddTxn(true)}
+          style={{width:"100%",marginBottom:12,padding:"11px",borderRadius:14,background:C.blush+"10",border:`1.5px dashed ${C.blush}45`,fontSize:13,fontWeight:700,color:C.blush,cursor:"pointer"}}>
           + Add Transaction
         </button>
       )}
+      {showAddTxn&&<TxnForm C={C} onSave={addTxn} onCancel={()=>setShowAddTxn(false)}/>}
 
-      {showForm&&(
-        <TxnForm C={C} onSave={addTxn} onCancel={()=>setShowForm(false)}/>
-      )}
-
-      {/* Filter bar */}
-      {!showForm&&!editId&&(
+      {/* Filters */}
+      {!showAddTxn&&!editTxnId&&(
         <div style={{display:"flex",gap:7,marginBottom:12}}>
-          <input value={filter.desc} onChange={e=>setFilter(f=>({...f,desc:e.target.value}))}
+          <input value={descFilter} onChange={e=>setDescFilter(e.target.value)}
             placeholder="🔍 Search…"
-            style={{flex:1,padding:"8px 12px",borderRadius:10,border:`1.5px solid ${C.div}`,background:"rgba(255,255,255,0.7)",fontSize:12,color:C.text,outline:"none"}}/>
+            style={{flex:1,padding:"7px 11px",borderRadius:10,border:`1.5px solid ${C.div}`,background:"rgba(255,255,255,0.7)",fontSize:12,color:C.text,outline:"none"}}/>
           <div style={{display:"flex",gap:4}}>
             {[["all","All"],["lc","LC"],["scu","SCU"]].map(([v,l])=>(
-              <button key={v} onClick={()=>setFilter(f=>({...f,acct:v}))}
-                style={{padding:"7px 10px",borderRadius:9,border:`1.5px solid ${filter.acct===v?C.blush+"50":C.div}`,background:filter.acct===v?C.blush+"14":"rgba(255,255,255,0.6)",fontSize:11,fontWeight:filter.acct===v?700:400,color:filter.acct===v?C.blush:C.lt,cursor:"pointer"}}>
+              <button key={v} onClick={()=>setAcctFilter(v)}
+                style={{padding:"6px 10px",borderRadius:9,border:`1.5px solid ${acctFilter===v?C.blush+"50":C.div}`,background:acctFilter===v?C.blush+"14":"rgba(255,255,255,0.6)",fontSize:11,fontWeight:acctFilter===v?700:400,color:acctFilter===v?C.blush:C.lt,cursor:"pointer"}}>
                 {l}
               </button>
             ))}
@@ -338,58 +642,39 @@ function LedgerPage({C,filtered,txns,showForm,setShowForm,addTxn,delTxn,editTxn,
         </div>
       )}
 
-      {grouped.length===0&&!showForm&&(
-        <div style={{textAlign:"center",padding:"50px 20px",color:C.lt}}>
-          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:24,marginBottom:8}}>No transactions yet</div>
-          <div style={{fontSize:13}}>Tap + Add Transaction to get started</div>
+      {monthTxns.length===0&&!showAddTxn&&(
+        <div style={{textAlign:"center",padding:"40px 20px",color:C.lt}}>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:22,marginBottom:6}}>No transactions this month</div>
+          <div style={{fontSize:12}}>Add one above, or set up recurring items in the 🔁 Recurring tab</div>
         </div>
       )}
 
-      {grouped.map(([monthKey,rows])=>{
-        const d=new Date(monthKey+"-15");
-        const label=d.toLocaleDateString("en-US",{month:"long",year:"numeric"});
-        const deps=rows.reduce((s,t)=>s+(t.amount>0?t.amount:0),0);
-        const wds=rows.reduce((s,t)=>s+(t.amount<0?t.amount:0),0);
+      {[...monthTxns].reverse().map((t,i)=>{
+        const col=t.account==="lc"?C.blush:C.sage;
+        const neg=t.amount<0;
+        if(editTxnId===t.id){
+          return <TxnForm key={t.id} C={C} init={{...t}} title="Edit Transaction" onSave={editTxn} onCancel={()=>setEditTxnId(null)}/>;
+        }
         return(
-          <div key={monthKey} style={{marginBottom:18}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:C.blush+"12",borderRadius:12,border:`1px solid ${C.blush}20`,marginBottom:8}}>
-              <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:17,fontWeight:700}}>{label}</span>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontSize:10,color:C.sage,fontWeight:700}}>+{fmt(deps)}</div>
-                <div style={{fontSize:10,color:C.danger,fontWeight:700}}>{fmt(wds)}</div>
-              </div>
+          <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,background:t.isAuto?C.amber+"0A":C.card,borderRadius:12,padding:"10px 12px",border:`1px solid ${t.isAuto?C.amber+"25":C.border}`,marginBottom:5,boxShadow:"0 1px 6px rgba(0,0,0,.04)"}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:col,flexShrink:0}}/>
+            <div style={{fontSize:11,color:C.lt,flexShrink:0,minWidth:68}}>{t.date.split("-").slice(1).map(Number).join("/")}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.desc}</div>
+              {t.note&&<div style={{fontSize:10,color:C.lt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.note}</div>}
+              <div style={{fontSize:9,color:col,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{t.account==="lc"?"LC":"SCU"} · {fmt(t.thisBal)}</div>
+              {t.isAuto&&<div style={{fontSize:9,color:C.amber}}>⟳ Auto-scheduled</div>}
             </div>
-
-            {rows.map(t=>{
-              const col=t.account==="lc"?C.blush:C.sage;
-              const neg=t.amount<0;
-              if(editId===t.id){
-                return(
-                  <TxnForm key={t.id} C={C} init={{...t,amount:t.amount}} title="Edit Transaction"
-                    onSave={editTxn} onCancel={()=>setEditId(null)}/>
-                );
+            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:neg?C.danger:C.sage,flexShrink:0}}>
+              {neg?"":"+"}{ new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:3,flexShrink:0}}>
+              {t.isAuto
+                ?<button onClick={()=>commitAuto(t)} title="Confirm" style={{fontSize:10,background:C.sage+"18",border:`1px solid ${C.sage}35`,borderRadius:6,padding:"2px 5px",color:C.sage,cursor:"pointer"}}>✓</button>
+                :<><button onClick={()=>setEditTxnId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
+                <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button></>
               }
-              return(
-                <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,background:C.card,borderRadius:12,padding:"10px 12px",border:`1px solid ${C.border}`,marginBottom:5,boxShadow:"0 1px 6px rgba(0,0,0,.04)"}}>
-                  <div style={{width:8,height:8,borderRadius:"50%",background:col,flexShrink:0}}/>
-                  <div style={{fontSize:11,color:C.lt,flexShrink:0,minWidth:72}}>{fmtDate(t.date)}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.desc}</div>
-                    {t.note&&<div style={{fontSize:10,color:C.lt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.note}</div>}
-                    <div style={{fontSize:9,color:col,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em"}}>{t.account==="lc"?"LC":"SCU"} · Bal: {fmt(t.thisBal)}</div>
-                  </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:neg?C.danger:C.sage}}>
-                      {neg?"":"+"}{ new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2}).format(t.amount)}
-                    </div>
-                  </div>
-                  <div style={{display:"flex",flexDirection:"column",gap:3,flexShrink:0}}>
-                    <button onClick={()=>setEditId(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.lt,padding:"2px"}}>✏️</button>
-                    <button onClick={()=>delTxn(t.id)} style={{fontSize:12,background:"none",border:"none",cursor:"pointer",color:C.danger,padding:"2px"}}>×</button>
-                  </div>
-                </div>
-              );
-            })}
+            </div>
           </div>
         );
       })}
@@ -397,19 +682,257 @@ function LedgerPage({C,filtered,txns,showForm,setShowForm,addTxn,delTxn,editTxn,
   );
 }
 
-// ── SETTINGS PAGE ─────────────────────────────────────────────────
+// ── RECURRING PAGE ───────────────────────────────────────────────
+function RecurringPage({C,recurringDebts,addRecurring,editRecurring,delRecurring,incomeStreams,addIncome,editIncome,delIncome}){
+  const [showAddDebt,setShowAddDebt]=useState(false);
+  const [editDebtId,setEditDebtId]=useState(null);
+  const [newDebt,setNewDebt]=useState({desc:"",day:"1",amount:"",account:"lc",note:""});
+
+  const [showAddInc,setShowAddInc]=useState(false);
+  const [editIncId,setEditIncId]=useState(null);
+  const [newInc,setNewInc]=useState({name:"",amount:"",frequency:"biweekly",lastDate:today(),account:"lc"});
+
+  function saveDebt(){
+    if(!newDebt.desc||!newDebt.amount)return;
+    if(editDebtId){editRecurring({...newDebt,id:editDebtId,active:true});}
+    else{addRecurring({...newDebt,id:"r"+Date.now(),active:true});}
+    setNewDebt({desc:"",day:"1",amount:"",account:"lc",note:""});
+    setShowAddDebt(false);setEditDebtId(null);
+  }
+  function startEditDebt(r){setNewDebt({...r});setEditDebtId(r.id);setShowAddDebt(true);}
+
+  function saveInc(){
+    if(!newInc.name||!newInc.amount)return;
+    if(editIncId){editIncome({...newInc,id:editIncId,active:true});}
+    else{addIncome({...newInc,id:"i"+Date.now(),active:true});}
+    setNewInc({name:"",amount:"",frequency:"biweekly",lastDate:today(),account:"lc"});
+    setShowAddInc(false);setEditIncId(null);
+  }
+  function startEditInc(s){setNewInc({...s});setEditIncId(s.id);setShowAddInc(true);}
+
+  const totalDebts=recurringDebts.filter(r=>r.active!==false).reduce((s,r)=>s+Math.abs(parseFloat(r.amount)||0),0);
+  const totalIncome=incomeStreams.filter(s=>s.active!==false).reduce((sum,s)=>{
+    const amt=parseFloat(s.amount)||0;
+    const freq=s.frequency||"biweekly";
+    const monthly=freq==="weekly"?amt*4.33:freq==="biweekly"?amt*2.17:amt;
+    return sum+monthly;
+  },0);
+
+  return(
+    <div className="fade">
+
+      {/* ── INCOME STREAMS ── */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:20,fontWeight:700,color:C.text}}>💰 Income Streams</div>
+          <div style={{fontSize:11,color:C.lt,marginTop:1}}>Auto-populates paychecks based on frequency</div>
+        </div>
+        {!showAddInc&&<button onClick={()=>{setShowAddInc(true);setEditIncId(null);setNewInc({name:"",amount:"",frequency:"biweekly",lastDate:today(),account:"lc"});}}
+          style={{padding:"6px 13px",borderRadius:10,border:`1.5px solid ${C.sage}45`,background:C.sage+"12",fontSize:12,fontWeight:700,color:C.sage,cursor:"pointer"}}>
+          + Add
+        </button>}
+      </div>
+
+      {showAddInc&&(
+        <div style={{background:C.card,borderRadius:16,padding:"15px",border:`1px solid ${C.border}`,marginBottom:12,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:600,marginBottom:12}}>{editIncId?"Edit":"New"} Income Stream</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+            <div style={{gridColumn:"1/-1"}}>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Stream Name</div>
+              <input value={newInc.name} onChange={e=>setNewInc(x=>({...x,name:e.target.value}))}
+                placeholder="e.g. X-Energy, TerraPower LC"
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.sage}30`,background:C.sage+"08",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Take-Home Amount ($)</div>
+              <input type="number" step="0.01" value={newInc.amount} onChange={e=>setNewInc(x=>({...x,amount:e.target.value}))}
+                placeholder="0.00"
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.sage}30`,background:C.sage+"08",fontSize:14,fontFamily:"'Cormorant Garamond',serif",fontWeight:700,color:C.sage,outline:"none",boxSizing:"border-box"}}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Frequency</div>
+              <select value={newInc.frequency} onChange={e=>setNewInc(x=>({...x,frequency:e.target.value}))}
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.sage}30`,background:C.sage+"08",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}>
+                <option value="weekly">Weekly</option>
+                <option value="biweekly">Bi-weekly (every 2 weeks)</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Date of Last Paycheck</div>
+              <input type="date" value={newInc.lastDate} onChange={e=>setNewInc(x=>({...x,lastDate:e.target.value}))}
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.sage}30`,background:C.sage+"08",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+            </div>
+            <div style={{gridColumn:"1/-1"}}>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Deposit To</div>
+              <div style={{display:"flex",gap:6}}>
+                {[{v:"lc",l:"LC / Main Checking",c:C.blush},{v:"scu",l:"SCU Checking",c:C.sage}].map(a=>(
+                  <button key={a.v} onClick={()=>setNewInc(x=>({...x,account:a.v}))}
+                    style={{flex:1,padding:"8px",borderRadius:9,border:`1.5px solid ${a.c}${newInc.account===a.v?"55":"22"}`,background:newInc.account===a.v?a.c+"18":"transparent",fontSize:12,fontWeight:newInc.account===a.v?700:400,color:a.c,cursor:"pointer"}}>
+                    {a.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{fontSize:11,color:C.lt,marginBottom:12,padding:"8px 10px",background:C.sage+"08",borderRadius:9}}>
+            💡 Based on your last paycheck date and frequency, paychecks will be auto-scheduled in the calendar each month.
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={saveInc} style={{flex:1,padding:"10px",borderRadius:11,background:C.sage+"20",border:`1.5px solid ${C.sage}45`,fontSize:13,fontWeight:700,color:C.sage,cursor:"pointer"}}>Save</button>
+            <button onClick={()=>{setShowAddInc(false);setEditIncId(null);}} style={{padding:"10px 16px",borderRadius:11,border:`1px solid ${C.div}`,background:"transparent",fontSize:13,color:C.lt,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {incomeStreams.length===0&&!showAddInc&&(
+        <div style={{textAlign:"center",padding:"20px",color:C.lt,fontSize:12,marginBottom:12}}>No income streams yet — add your paychecks above.</div>
+      )}
+
+      {incomeStreams.map(s=>{
+        const amt=parseFloat(s.amount)||0;
+        const freq=s.frequency||"biweekly";
+        const monthly=freq==="weekly"?amt*4.33:freq==="biweekly"?amt*2.17:amt;
+        return(
+          <div key={s.id} style={{background:C.card,borderRadius:14,padding:"13px 15px",border:`1.5px solid ${C.sage}22`,marginBottom:8,boxShadow:"0 1px 8px rgba(0,0,0,.05)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:700,color:C.text}}>{s.name}</div>
+                <div style={{fontSize:11,color:C.lt,marginTop:2}}>
+                  {fmt(amt)} · {freq==="weekly"?"Weekly":freq==="biweekly"?"Bi-weekly":"Monthly"} · {s.account==="lc"?"LC":"SCU"}
+                </div>
+                <div style={{fontSize:11,color:C.lt}}>Last paycheck: {s.lastDate||"—"}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:20,fontWeight:700,color:C.sage}}>{fmt(monthly)}</div>
+                <div style={{fontSize:9,color:C.lt}}>est. monthly</div>
+                <div style={{display:"flex",gap:6,marginTop:4,justifyContent:"flex-end"}}>
+                  <button onClick={()=>startEditInc(s)} style={{fontSize:10,color:C.lt,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Edit</button>
+                  <button onClick={()=>delIncome(s.id)} style={{fontSize:10,color:C.danger,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Delete</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{borderTop:`1px solid ${C.div}`,paddingTop:6,marginBottom:16,display:"flex",justifyContent:"space-between"}}>
+        <span style={{fontSize:12,color:C.lt}}>Est. total monthly income</span>
+        <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:C.sage}}>{fmt(totalIncome)}</span>
+      </div>
+
+      {/* ── RECURRING DEBTS ── */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:20,fontWeight:700,color:C.text}}>🔁 Recurring Debts & Bills</div>
+          <div style={{fontSize:11,color:C.lt,marginTop:1}}>Auto-populates withdrawals on the scheduled day each month</div>
+        </div>
+        {!showAddDebt&&<button onClick={()=>{setShowAddDebt(true);setEditDebtId(null);setNewDebt({desc:"",day:"1",amount:"",account:"lc",note:""});}}
+          style={{padding:"6px 13px",borderRadius:10,border:`1.5px solid ${C.blush}45`,background:C.blush+"12",fontSize:12,fontWeight:700,color:C.blush,cursor:"pointer"}}>
+          + Add
+        </button>}
+      </div>
+
+      {showAddDebt&&(
+        <div style={{background:C.card,borderRadius:16,padding:"15px",border:`1px solid ${C.border}`,marginBottom:12,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:600,marginBottom:12}}>{editDebtId?"Edit":"New"} Recurring Item</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+            <div style={{gridColumn:"1/-1"}}>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Description</div>
+              <input value={newDebt.desc} onChange={e=>setNewDebt(x=>({...x,desc:e.target.value}))}
+                placeholder="e.g. Mortgage Draft, Avant, SoFi…"
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.blush}30`,background:C.blush+"08",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Day of Month (1–31)</div>
+              <input type="number" min="1" max="31" value={newDebt.day} onChange={e=>setNewDebt(x=>({...x,day:e.target.value}))}
+                placeholder="1"
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.blush}30`,background:C.blush+"08",fontSize:16,fontFamily:"'Cormorant Garamond',serif",fontWeight:700,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+              <div style={{fontSize:9,color:C.lt,marginTop:2}}>If month is shorter, uses last day</div>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Amount ($)</div>
+              <input type="number" step="0.01" value={newDebt.amount} onChange={e=>setNewDebt(x=>({...x,amount:e.target.value}))}
+                placeholder="0.00"
+                style={{width:"100%",padding:"8px 10px",borderRadius:10,border:`1.5px solid ${C.blush}30`,background:C.blush+"08",fontSize:16,fontFamily:"'Cormorant Garamond',serif",fontWeight:700,color:C.danger,outline:"none",boxSizing:"border-box"}}/>
+              <div style={{fontSize:9,color:C.lt,marginTop:2}}>Enter as positive — saved as withdrawal</div>
+            </div>
+            <div style={{gridColumn:"1/-1"}}>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Deduct From</div>
+              <div style={{display:"flex",gap:6}}>
+                {[{v:"lc",l:"LC / Main Checking",c:C.blush},{v:"scu",l:"SCU Checking",c:C.sage}].map(a=>(
+                  <button key={a.v} onClick={()=>setNewDebt(x=>({...x,account:a.v}))}
+                    style={{flex:1,padding:"8px",borderRadius:9,border:`1.5px solid ${a.c}${newDebt.account===a.v?"55":"22"}`,background:newDebt.account===a.v?a.c+"18":"transparent",fontSize:12,fontWeight:newDebt.account===a.v?700:400,color:a.c,cursor:"pointer"}}>
+                    {a.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{gridColumn:"1/-1"}}>
+              <div style={{fontSize:10,color:C.lt,marginBottom:3}}>Note (optional)</div>
+              <input value={newDebt.note||""} onChange={e=>setNewDebt(x=>({...x,note:e.target.value}))}
+                placeholder="e.g. auto-draft, check #…"
+                style={{width:"100%",padding:"7px 10px",borderRadius:10,border:`1.5px solid ${C.div}`,background:"rgba(255,255,255,0.5)",fontSize:12,color:C.text,outline:"none",boxSizing:"border-box"}}/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={saveDebt} style={{flex:1,padding:"10px",borderRadius:11,background:C.blush+"20",border:`1.5px solid ${C.blush}45`,fontSize:13,fontWeight:700,color:C.blush,cursor:"pointer"}}>Save</button>
+            <button onClick={()=>{setShowAddDebt(false);setEditDebtId(null);}} style={{padding:"10px 16px",borderRadius:11,border:`1px solid ${C.div}`,background:"transparent",fontSize:13,color:C.lt,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {recurringDebts.length===0&&!showAddDebt&&(
+        <div style={{textAlign:"center",padding:"20px",color:C.lt,fontSize:12,marginBottom:12}}>No recurring items yet — add your monthly bills above.</div>
+      )}
+
+      {/* Recurring debt table */}
+      {recurringDebts.length>0&&(
+        <div style={{background:C.card,borderRadius:16,border:`1px solid ${C.border}`,overflow:"hidden",marginBottom:8,boxShadow:"0 2px 14px rgba(0,0,0,.06)"}}>
+          {/* Table header */}
+          <div style={{display:"grid",gridTemplateColumns:"28px 1fr 60px 80px 50px",gap:6,padding:"9px 13px",background:C.blush+"10",borderBottom:`1px solid ${C.blush}18`}}>
+            {["Day","Description","Acct","Amount",""].map((h,i)=>(
+              <div key={i} style={{fontSize:9,color:C.lt,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,textAlign:i===3?"right":"left"}}>{h}</div>
+            ))}
+          </div>
+          {recurringDebts.map((r,idx)=>(
+            <div key={r.id} style={{display:"grid",gridTemplateColumns:"28px 1fr 60px 80px 50px",gap:6,padding:"9px 13px",borderBottom:idx<recurringDebts.length-1?`1px solid ${C.div}`:"none",alignItems:"center",background:r.active===false?"rgba(0,0,0,.02)":"transparent"}}>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:C.blush,textAlign:"center"}}>{r.day}</div>
+              <div>
+                <div style={{fontSize:13,fontWeight:600,color:r.active===false?C.lt:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.desc}</div>
+                {r.note&&<div style={{fontSize:10,color:C.lt,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.note}</div>}
+              </div>
+              <div style={{fontSize:11,color:r.account==="lc"?C.blush:C.sage,fontWeight:700}}>{r.account==="lc"?"LC":"SCU"}</div>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:15,fontWeight:700,color:C.danger,textAlign:"right"}}>−{fmt(Math.abs(parseFloat(r.amount)||0))}</div>
+              <div style={{display:"flex",gap:4}}>
+                <button onClick={()=>startEditDebt(r)} style={{fontSize:10,color:C.lt,background:"none",border:"none",cursor:"pointer",padding:"2px"}}>✏️</button>
+                <button onClick={()=>delRecurring(r.id)} style={{fontSize:12,color:C.danger,background:"none",border:"none",cursor:"pointer",padding:"2px"}}>×</button>
+              </div>
+            </div>
+          ))}
+          {/* Total row */}
+          <div style={{display:"grid",gridTemplateColumns:"28px 1fr 60px 80px 50px",gap:6,padding:"9px 13px",background:C.blush+"08",borderTop:`1.5px solid ${C.blush}20`}}>
+            <div/><div style={{fontSize:11,fontWeight:700,color:C.text}}>Monthly Total</div><div/><div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:700,color:C.danger,textAlign:"right"}}>−{fmt(totalDebts)}</div><div/>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SETTINGS PAGE ────────────────────────────────────────────────
 function SettingsPage({C,lcStart,scuStart,onStartChange}){
   return(
-    <div>
-      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:24,fontWeight:700,marginBottom:14}}>Settings</div>
+    <div className="fade">
+      <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:22,fontWeight:700,marginBottom:14}}>Settings</div>
       <div style={{background:C.card,borderRadius:18,padding:"18px",border:`1px solid ${C.border}`,marginBottom:14,boxShadow:"0 2px 16px rgba(0,0,0,.07)"}}>
         <div style={{fontSize:10,color:C.lt,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:14}}>Starting Balances</div>
-        <div style={{fontSize:12,color:C.sub,marginBottom:16,lineHeight:1.6}}>Set the opening balance for each account. Running balances calculate from here.</div>
-        {[{k:"lc",l:"LC / Main Checking (X-Energy)",c:C.blush,v:lcStart},{k:"scu",l:"SCU Checking (TerraPower)",c:C.sage,v:scuStart}].map(a=>(
+        <div style={{fontSize:12,color:C.sub,marginBottom:16,lineHeight:1.6}}>Opening balance for each account. All transactions calculate running balances from here.</div>
+        {[{k:"lc",l:"LC / Main Checking",c:C.blush,v:lcStart},{k:"scu",l:"SCU Checking",c:C.sage,v:scuStart}].map(a=>(
           <div key={a.k} style={{marginBottom:16}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
-              <div style={{width:10,height:10,borderRadius:"50%",background:a.c}}/>
-              <span style={{fontSize:13,fontWeight:600}}>{a.l}</span>
+            <div style={{fontSize:12,fontWeight:600,marginBottom:7,display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:9,height:9,borderRadius:"50%",background:a.c}}/>
+              {a.l}
             </div>
             <div style={{position:"relative"}}>
               <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:20,fontFamily:"'Cormorant Garamond',serif",fontWeight:600,color:a.c}}>$</span>
@@ -420,20 +943,17 @@ function SettingsPage({C,lcStart,scuStart,onStartChange}){
         ))}
       </div>
       <div style={{background:C.card,borderRadius:18,padding:"16px 18px",border:`1px solid ${C.border}`,boxShadow:"0 2px 16px rgba(0,0,0,.07)"}}>
-        <div style={{fontSize:10,color:C.lt,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:12}}>How to Use</div>
+        <div style={{fontSize:10,color:C.lt,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:12}}>How Auto-Scheduling Works</div>
         {[
-          ["📒","Add transactions as they happen","Use − for withdrawals and payments, + for deposits and paychecks."],
-          ["🔴🟢","Account color dots","Blush/red = LC Checking · Green = SCU Checking"],
-          ["💰","Running balance","Each row shows the balance for that account after the transaction."],
-          ["🔍","Filter & search","Search any description or filter to see just LC or SCU transactions."],
-          ["✏️ ×","Edit or delete","Correct mistakes any time — balances recalculate automatically."],
+          ["🔁","Recurring debts","Set the day of month and amount in the Recurring tab. Each month the withdrawal appears automatically on that day."],
+          ["💰","Paychecks","Enter your take-home amount, frequency, and date of your last paycheck. The app calculates all future pay dates forward."],
+          ["🟡","Auto entries","Orange dot on calendar = auto-scheduled. Tap ✓ to confirm and make it permanent, or leave it as a forecast."],
+          ["✏️","Manual override","If an amount changes one month, just add a manual transaction — it overrides the auto entry for that day."],
+          ["📅","Navigation","Use ‹ › arrows in the header to switch months. Each month shows its own calendar and ledger."],
         ].map(([ico,title,desc],i)=>(
           <div key={i} style={{display:"flex",gap:10,marginBottom:i<4?12:0}}>
-            <span style={{fontSize:17,flexShrink:0,minWidth:28}}>{ico}</span>
-            <div>
-              <div style={{fontSize:12,fontWeight:700}}>{title}</div>
-              <div style={{fontSize:11,color:C.lt,marginTop:2,lineHeight:1.5}}>{desc}</div>
-            </div>
+            <span style={{fontSize:18,flexShrink:0,minWidth:26}}>{ico}</span>
+            <div><div style={{fontSize:12,fontWeight:700}}>{title}</div><div style={{fontSize:11,color:C.lt,marginTop:2,lineHeight:1.5}}>{desc}</div></div>
           </div>
         ))}
       </div>
